@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edgarfacts"
+version = "0.1.0"
+description = "Extract SEC EDGAR XBRL company facts and filing submissions into analysis-ready pandas DataFrames"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+requires-python = ">=3.9"
+
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "msgspec>=0.18",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "ruff",
+    "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-username/edgarfacts"
+Repository = "https://github.com/your-username/edgarfacts"
+Issues = "https://github.com/your-username/edgarfacts/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
