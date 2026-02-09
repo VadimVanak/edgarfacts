@@ -208,69 +208,96 @@ def compute_period_values(
 def compute_instant_period_values(
     facts_df: pd.DataFrame,
     windows_df: pd.DataFrame,
+    *,
+    chunk_rows: int = 5_000_000,
 ) -> pd.DataFrame:
     """
     Compute value1..value4 for instant facts (start==end) based on window end dates.
 
+    Memory-optimized:
+    - no self-merges of inst
+    - use a single MultiIndex Series lookup
+    - chunked reindex to cap peak RAM
+
     Output
     ------
-    inst_values_df: ['adsh','tag','value1','value2','value3','value4']
+    inst_values_df: columns ['adsh','tag','value1','value2','value3','value4']
     """
+    # Minimal projection and dtype normalization
     df = facts_df[["adsh", "tag", "start", "end", "value"]].copy()
     df["adsh"] = pd.to_numeric(df["adsh"], errors="raise").astype("int64")
     df["start"] = df["start"].astype(config.DATETIME_DTYPE)
     df["end"] = df["end"].astype(config.DATETIME_DTYPE)
+    df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
 
-    inst = df[df["start"] == df["end"]][["adsh", "tag", "end", "value"]].copy()
+    inst = df[df["start"] == df["end"]][["adsh", "tag", "end", "value"]]
+    if inst.empty:
+        return inst.iloc[0:0].assign(value1=np.nan, value2=np.nan, value3=np.nan, value4=np.nan)[
+            ["adsh", "tag", "value1", "value2", "value3", "value4"]
+        ]
 
-    # Build per-enum end tables without pivot (less memory, avoids wide sparse frame)
-    ends = (
-        windows_df[["adsh", "enum", "end"]]
-        .drop_duplicates()
-        .copy()
-    )
-    ends["adsh"] = pd.to_numeric(ends["adsh"], errors="raise").astype("int64")
-    ends["end"] = ends["end"].astype(config.DATETIME_DTYPE)
+    # Build end-date maps per enum (adsh -> end_enum)
+    w = windows_df[["adsh", "enum", "end"]].drop_duplicates().copy()
+    w["adsh"] = pd.to_numeric(w["adsh"], errors="raise").astype("int64")
+    w["end"] = w["end"].astype(config.DATETIME_DTYPE)
 
-    end1 = ends[ends["enum"] == 1][["adsh", "end"]].rename(columns={"end": "end_1"})
-    end2 = ends[ends["enum"] == 2][["adsh", "end"]].rename(columns={"end": "end_2"})
-    end3 = ends[ends["enum"] == 3][["adsh", "end"]].rename(columns={"end": "end_3"})
-    end4 = ends[ends["enum"] == 4][["adsh", "end"]].rename(columns={"end": "end_4"})
+    end_map = {}
+    for enum in (1, 2, 3, 4):
+        s = w.loc[w["enum"] == enum, ["adsh", "end"]].drop_duplicates()
+        end_map[enum] = s.set_index("adsh")["end"]
 
-    out = inst.merge(end1, how="left", on="adsh", sort=False)
-    out = out.merge(end2, how="left", on="adsh", sort=False)
-    out = out.merge(end3, how="left", on="adsh", sort=False)
-    out = out.merge(end4, how="left", on="adsh", sort=False)
+    # Single lookup structure: (adsh, tag, end) -> value
+    # Keep tag dtype (category) intact for memory; MultiIndex supports it.
+    values = inst.set_index(["adsh", "tag", "end"])["value"]
+    # (Optional) If duplicates exist, keep last deterministically (should not after earlier dedup)
+    if values.index.has_duplicates:
+        values = values[~values.index.duplicated(keep="last")]
 
-    # Join instant values at each end date
-    inst_base = inst[["adsh", "tag", "end", "value"]].copy()
+    # We only need adsh+tag unique pairs as output index.
+    base = inst[["adsh", "tag"]].drop_duplicates(ignore_index=True)
 
-    out = out.merge(
-        inst_base.rename(columns={"end": "end_1", "value": "value1"}),
-        how="left",
-        on=["adsh", "tag", "end_1"],
-        sort=False,
-    )
-    out = out.merge(
-        inst_base.rename(columns={"end": "end_2", "value": "value2"}),
-        how="left",
-        on=["adsh", "tag", "end_2"],
-        sort=False,
-    )
-    out = out.merge(
-        inst_base.rename(columns={"end": "end_3", "value": "value3"}),
-        how="left",
-        on=["adsh", "tag", "end_3"],
-        sort=False,
-    )
-    out = out.merge(
-        inst_base.rename(columns={"end": "end_4", "value": "value4"}),
-        how="left",
-        on=["adsh", "tag", "end_4"],
-        sort=False,
-    )
+    # Allocate output arrays (float64); fill with NaN by default
+    n = len(base)
+    out_v1 = np.full(n, np.nan, dtype="float64")
+    out_v2 = np.full(n, np.nan, dtype="float64")
+    out_v3 = np.full(n, np.nan, dtype="float64")
+    out_v4 = np.full(n, np.nan, dtype="float64")
 
-    return out[["adsh", "tag", "value1", "value2", "value3", "value4"]].copy()
+    # Vectorized end lookup per row using Series.reindex on adsh
+    # This avoids merges and keeps memory low.
+    adsh_arr = base["adsh"].to_numpy(dtype="int64", copy=False)
+    tag_arr = base["tag"].to_numpy(copy=False)  # may be object or category codes
+
+    e1 = end_map[1].reindex(adsh_arr).to_numpy(copy=False)
+    e2 = end_map[2].reindex(adsh_arr).to_numpy(copy=False)
+    e3 = end_map[3].reindex(adsh_arr).to_numpy(copy=False)
+    e4 = end_map[4].reindex(adsh_arr).to_numpy(copy=False)
+
+    # Chunked MultiIndex reindex lookups to cap peak RAM
+    def _fill_chunk(start: int, stop: int) -> None:
+        idx1 = pd.MultiIndex.from_arrays([adsh_arr[start:stop], tag_arr[start:stop], e1[start:stop]])
+        idx2 = pd.MultiIndex.from_arrays([adsh_arr[start:stop], tag_arr[start:stop], e2[start:stop]])
+        idx3 = pd.MultiIndex.from_arrays([adsh_arr[start:stop], tag_arr[start:stop], e3[start:stop]])
+        idx4 = pd.MultiIndex.from_arrays([adsh_arr[start:stop], tag_arr[start:stop], e4[start:stop]])
+
+        out_v1[start:stop] = values.reindex(idx1).to_numpy()
+        out_v2[start:stop] = values.reindex(idx2).to_numpy()
+        out_v3[start:stop] = values.reindex(idx3).to_numpy()
+        out_v4[start:stop] = values.reindex(idx4).to_numpy()
+
+    if chunk_rows is None or chunk_rows <= 0:
+        _fill_chunk(0, n)
+    else:
+        for start in range(0, n, chunk_rows):
+            stop = min(start + chunk_rows, n)
+            _fill_chunk(start, stop)
+
+    out = base.copy()
+    out["value1"] = out_v1
+    out["value2"] = out_v2
+    out["value3"] = out_v3
+    out["value4"] = out_v4
+    return out[["adsh", "tag", "value1", "value2", "value3", "value4"]]
 
 
 def _enrich_sub_with_windows(sub_df: pd.DataFrame, windows_df: pd.DataFrame) -> pd.DataFrame:
