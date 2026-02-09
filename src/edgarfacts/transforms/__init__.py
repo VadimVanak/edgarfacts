@@ -17,6 +17,6 @@ Public API:
   cleaned, period-aligned, and taxonomy-completed figures.
 """
 
-from .figures import transform_figures
+from .figures import build_base_figures
 
 __all__ = ["build_base_figures"]
