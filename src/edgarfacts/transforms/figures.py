@@ -156,10 +156,6 @@ def build_base_figures(
     # 4) Remove huge values
     facts = _remove_huge_values(facts)
 
-    # Re-apply tag categorical if it was categorical upstream
-    if tag_categories is not None:
-        facts["tag"] = pd.Categorical(facts["tag"].astype(str), categories=list(map(str, tag_categories)))
-
     # 5) Infer reporting windows
     windows = infer_reporting_windows(facts, sub_df)
 
