@@ -71,10 +71,22 @@ def check_subs(logger, sub: pd.DataFrame) -> None:
         "amendment_adsh=0, but is_amended flag is True"
     )
 
-    # Version sanity (keep original accepted set)
-    existing_versions = [0, 2008, 2009] + list(range(2011, 2025))
-    assert (~sub["version"].isin(existing_versions)).sum() == 0, "There are unknown version numbers"
-
+    # Version plausibility checks (drift-resistant)
+    assert (sub["version"] == 0).sum() == 0, "There are reports without versions"
+    
+    min_allowed = 2008
+    max_year_in_data = int(max(sub["accepted"].dt.year.max(), sub["period"].dt.year.max()))
+    max_allowed = max_year_in_data + 2
+    
+    bad = ~sub["version"].between(min_allowed, max_allowed)
+    assert bad.sum() == 0, (
+        f"Found {bad.sum()} rows with implausible version years "
+        f"(allowed [{min_allowed}, {max_allowed}])"
+    )
+    
+    ahead = sub["version"] > (sub["accepted"].dt.year + 3)
+    assert ahead.sum() == 0, "Some versions are far in the future vs acceptance year"
+    
     # Forms sanity
     assert (~sub["form"].isin(["10-Q", "10-K", "10-Q/A", "10-K/A"])).sum() == 0, "There are unknown forms"
 
