@@ -30,11 +30,8 @@ It is designed for **large-scale, reproducible data ingestion** and includes str
 Install directly from GitHub:
 
 ```bash
-pip install git+https://github.com/your-username/edgarfacts.git
+pip install git+https://github.com/VadimVanak/edgarfacts.git
 ````
-
-(Replace `your-username` with the actual GitHub username.)
-
 Python ≥ **3.9** is required.
 
 ---
