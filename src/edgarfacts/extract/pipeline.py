@@ -110,6 +110,13 @@ def extract_submissions_and_facts_internal(fetcher: URLFetcher, logger, debug_mo
         .merge(tickers, how="inner", on="cik")
     )
 
+    # Enforce numeric dtypes (prevent object drift from concatenation)
+    sub["cik"] = pd.to_numeric(sub["cik"], errors="raise").astype("int64")
+    sub["sic"] = pd.to_numeric(sub["sic"], errors="raise").astype("int64")
+    sub["adsh"] = pd.to_numeric(sub["adsh"], errors="raise").astype("int64")
+    sub["version"] = pd.to_numeric(sub["version"], errors="raise").astype("int64")
+    sub["amendment_adsh"] = pd.to_numeric(sub["amendment_adsh"], errors="raise").astype("int64")
+    
     # Ensure datetime64[s] (defensive; should already be)
     if sub["period"].dtype != np.dtype("datetime64[s]"):
         sub["period"] = sub["period"].astype("datetime64[s]")
