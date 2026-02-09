@@ -19,4 +19,4 @@ Public API:
 
 from .figures import transform_figures
 
-__all__ = ["transform_figures"]
+__all__ = ["build_base_figures"]
