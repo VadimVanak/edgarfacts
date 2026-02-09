@@ -155,6 +155,7 @@ def build_base_figures(
 
     # 4) Remove huge values
     facts = _remove_huge_values(facts)
+    logger.info(f"Huge values removed")
 
     # 5) Infer reporting windows
     windows = infer_reporting_windows(facts, sub_df)
@@ -164,6 +165,7 @@ def build_base_figures(
 
     # 7) Compute instant period values (start==end) using window end dates
     inst_values = compute_instant_period_values(facts, windows)
+    logger.info(f"Period values computed")
 
     # 8) Combine with deterministic priority: non-instant first, then instants
     # (mirrors original approach)
@@ -173,6 +175,7 @@ def build_base_figures(
         .drop_duplicates(subset=["adsh", "tag"], keep="first")
         .drop(columns="_prio")
     )
+    logger.info(f"Combine with deterministic priority: non-instant first, then instants - done")
 
     # 9) Rename to final wide schema + is_computed flag
     figures = combined.rename(
@@ -192,9 +195,6 @@ def build_base_figures(
     figures["quarterly_figure"] = pd.to_numeric(figures["quarterly_figure"], errors="coerce").astype("float64")
     figures["reported_figure_py"] = pd.to_numeric(figures["reported_figure_py"], errors="coerce").astype("float64")
     figures["quarterly_figure_py"] = pd.to_numeric(figures["quarterly_figure_py"], errors="coerce").astype("float64")
-
-    if tag_categories is not None:
-        figures["tag"] = pd.Categorical(figures["tag"].astype(str), categories=list(map(str, tag_categories)))
 
     # Ensure window datetimes in sub_enriched are seconds
     for c in [
