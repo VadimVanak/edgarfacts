@@ -26,4 +26,5 @@ __all__ = [
     "get_logger",
     "extract_submissions_and_facts",
     "check_submissions_and_facts",
+    "transform_figures",
 ]
