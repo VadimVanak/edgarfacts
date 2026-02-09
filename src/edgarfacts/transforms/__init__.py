@@ -1,17 +1,22 @@
 # src/edgarfacts/transforms/__init__.py
 """
-Transformations subpackage for edgarfacts.
+Transformations for edgarfacts.
 
-This namespace is reserved for post-extraction transformations of the
-datasets produced by `extract_submissions_and_facts`, such as:
+This subpackage contains post-extraction transformations applied to the
+(raw) facts and submissions dataframes produced by
+`extract_submissions_and_facts`.
 
-- normalization / reshaping
-- aggregation across periods
-- feature engineering
-- filtering and enrichment
+Design principles:
+- Transformations are logically independent from extraction and validation.
+- Input and output dataframe schemas are explicit and stable.
+- Heavy I/O (e.g. taxonomy downloads) is isolated from pure dataframe logic.
+- Functions are written to be unit-testable with small synthetic datasets.
 
-Transformations are intentionally kept independent from the extraction
-and validation logic to ensure a stable and reproducible ingestion layer.
+Public API:
+- transform_figures: end-to-end transformation pipeline producing
+  cleaned, period-aligned, and taxonomy-completed figures.
 """
 
-__all__ = []
+from .figures import transform_figures
+
+__all__ = ["transform_figures"]
