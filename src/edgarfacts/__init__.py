@@ -22,6 +22,9 @@ from .extract.pipeline import extract_submissions_and_facts
 # Public validation / emergency-break checks
 from .validation.checks import check_submissions_and_facts
 
+# Public trasnformation
+from transforms.figures import transform_figures
+
 __all__ = [
     "get_logger",
     "extract_submissions_and_facts",
