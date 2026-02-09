@@ -23,11 +23,11 @@ from .extract.pipeline import extract_submissions_and_facts
 from .validation.checks import check_submissions_and_facts
 
 # Public trasnformation
-from .transforms.figures import transform_figures
+from .transforms.figures import build_base_figures
 
 __all__ = [
     "get_logger",
     "extract_submissions_and_facts",
     "check_submissions_and_facts",
-    "transform_figures",
+    "build_base_figures",
 ]
