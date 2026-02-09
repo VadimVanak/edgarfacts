@@ -1,4 +1,3 @@
-# src/edgarfacts/extract/facts_companyfacts.py
 """
 Company facts extraction from SEC companyfacts.zip.
 
@@ -15,8 +14,6 @@ Dtypes:
 - value: float
 """
 
-from __future__ import annotations
-
 from io import BytesIO
 from typing import List, Optional
 from zipfile import ZipFile
@@ -27,10 +24,6 @@ import pandas as pd
 
 from edgarfacts.fetching import URLFetcher
 
-
-# -----------------------------
-# msgspec structures (unchanged)
-# -----------------------------
 
 class TagItem(msgspec.Struct):
     end: str
@@ -98,19 +91,8 @@ class Dei(msgspec.Struct):
 def get_decoder(tag_list: np.ndarray) -> msgspec.json.Decoder:
     """
     Create and return a msgspec decoder for SEC companyfacts JSON, restricted to tag_list.
-
-    Parameters
-    ----------
-    tag_list:
-        Iterable/array of tags to decode under the "us-gaap" section.
-
-    Returns
-    -------
-    msgspec.json.Decoder
-        Decoder for the top-level Figures struct.
     """
-    # msgspec defstruct expects a list of (name, type, default)
-    tag_types = [(str(t), Tag | None, None) for t in tag_list]
+    tag_types = [(str(t), Optional[Tag], None) for t in tag_list]
     UsGaap = msgspec.defstruct("UsGaap", tag_types)
 
     class Facts(msgspec.Struct):
@@ -138,7 +120,7 @@ def get_decoder(tag_list: np.ndarray) -> msgspec.json.Decoder:
     Facts._tag_list = tag_list
 
     class Figures(msgspec.Struct):
-        facts: Facts = None
+        facts: Optional[Facts] = None
 
         def to_dataframe(self) -> pd.DataFrame:
             return self.facts.to_dataframe()
@@ -154,28 +136,13 @@ def load_facts(
 ) -> pd.DataFrame:
     """
     Extract facts from SEC companyfacts.zip for the given CIKs and tags.
-
-    Parameters
-    ----------
-    valid_ciks:
-        Array of CIKs to include.
-    tag_list:
-        Array of tag names to decode and keep.
-    fetcher:
-        URLFetcher instance.
-    logger:
-        Logger instance.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Columns: ["adsh", "tag", "start", "end", "value"]
-        with datetime64[s] for start/end and categorical tag.
     """
     decoder = get_decoder(tag_list)
     df_array: List[pd.DataFrame] = []
 
-    with fetcher.fetch("https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip") as resp:
+    with fetcher.fetch(
+        "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
+    ) as resp:
         zf = ZipFile(BytesIO(resp.read()))
 
     nlist = [n for n in zf.namelist() if int(n[3:13]) in valid_ciks]
