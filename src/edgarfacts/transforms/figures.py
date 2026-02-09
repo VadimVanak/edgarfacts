@@ -85,12 +85,31 @@ def _remove_contradicting_values(facts_df: pd.DataFrame) -> pd.DataFrame:
 
 def _remove_huge_values(facts_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Filter extreme values except for specific notional derivative tags.
+    Filter extreme absolute values except for a whitelist of tags.
+
+    Memory notes:
+    - NEVER cast 'tag' to str for the full column.
+    - If tag is categorical, isin() stays compact.
     """
-    df = facts_df.copy()
-    # If tag is categorical, comparisons against str whitelist still work after astype(str)
-    tag_str = df["tag"].astype(str)
-    keep = df["value"].abs().le(config.MAX_ABS_FIGURE_VALUE) | tag_str.isin(config.LARGE_VALUE_TAG_WHITELIST)
+    df = facts_df
+
+    # fast numeric mask; uses ndarray, minimal overhead
+    v = df["value"].to_numpy(copy=False)
+    mask_value_ok = np.abs(v) <= config.MAX_ABS_FIGURE_VALUE
+
+    # whitelist mask without exploding categories into object strings
+    tag_col = df["tag"]
+    if pd.api.types.is_categorical_dtype(tag_col):
+        # ensure whitelist values are in the same "representation" as categories
+        # (categories are strings in your pipeline)
+        mask_whitelist = tag_col.isin(config.LARGE_VALUE_TAG_WHITELIST)
+    else:
+        # do NOT astype(str); just compare directly
+        mask_whitelist = tag_col.isin(config.LARGE_VALUE_TAG_WHITELIST)
+
+    keep = mask_value_ok | mask_whitelist.to_numpy(copy=False)
+
+    # boolean indexing returns a view-like slice; copy to detach downstream if needed
     return df.loc[keep].copy()
 
 
