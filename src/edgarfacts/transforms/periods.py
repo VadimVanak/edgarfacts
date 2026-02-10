@@ -83,9 +83,27 @@ def infer_reporting_windows(facts_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.
         & (df4["start"] + pd.DateOffset(years=1, days=10) > df4["end"])
     ].copy()
 
+    # Keep only top K candidates by frequency to avoid noisy tiny ranges,
+    # then define enum by start ordering (longest vs shortest).
+    K = 6  # small cap; reduces noise but keeps enough candidates
     df4 = df4.sort_values(by=["adsh", "end", "n"], ascending=[True, True, False], kind="mergesort")
-    df4["enum"] = df4.groupby(["adsh", "end"], sort=False).cumcount() + 1
-    df4 = df4[df4["enum"] <= 2][["adsh", "start", "end", "enum"]].copy()
+    df4["rk_n"] = df4.groupby(["adsh", "end"], sort=False).cumcount() + 1
+    df4 = df4[df4["rk_n"] <= K].drop(columns="rk_n")
+    
+    # Now pick two ranges by start ordering:
+    # enum=1 (reporting year/YTD) => earliest start (longest duration)
+    # enum=2 (quarter)            => latest start (shortest duration)
+    df4 = df4.sort_values(by=["adsh", "end", "start"], ascending=[True, True, True], kind="mergesort")
+    df4["rk_start_asc"] = df4.groupby(["adsh", "end"], sort=False).cumcount()
+    
+    first = df4[df4["rk_start_asc"] == 0][["adsh", "start", "end"]].assign(enum=1)
+    
+    # latest start: take last within group; do it without groupby.tail (creates copies)
+    df4["rk_start_desc"] = df4.groupby(["adsh", "end"], sort=False).cumcount(ascending=False)
+    second = df4[df4["rk_start_desc"] == 0][["adsh", "start", "end"]].assign(enum=2)
+    
+    df4 = pd.concat([first, second], ignore_index=True)
+    df4["enum"] = df4["enum"].astype("uint8")
 
     # Align prior-year windows (enum 3/4) based on start dates shifted by -1 year
     py_tol = config.PRIOR_YEAR_ALIGNMENT_TOLERANCE_DAYS
