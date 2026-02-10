@@ -178,7 +178,6 @@ def build_base_figures(
         .drop_duplicates(subset=["adsh", "tag"], keep="first")
         .drop(columns="_prio")
     )
-    logger.info(f"Combine with deterministic priority: non-instant first, then instants - done")
 
     # 9) Rename to final wide schema + is_computed flag
     figures = combined.rename(
