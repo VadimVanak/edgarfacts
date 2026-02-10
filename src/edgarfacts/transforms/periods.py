@@ -77,6 +77,7 @@ def infer_reporting_windows(facts_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.
         .reset_index(name="n")
     )
 
+    
     # Filter valid durations (exclude instants and insane ranges)
     df4 = df4[
         (df4["start"] != df4["end"])
@@ -84,19 +85,31 @@ def infer_reporting_windows(facts_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.
     ].copy()
 
     # df4 currently has columns: adsh, end, start, n
-    
-    # 1) Keep exactly top 2 candidates by frequency (n) per (adsh,end)
+    # 1) Rank candidates by frequency (n) within each (adsh, end)
     df4 = df4.sort_values(by=["adsh", "end", "n"], ascending=[True, True, False], kind="mergesort")
     df4["rk_n"] = df4.groupby(["adsh", "end"], sort=False).cumcount() + 1
-    df4 = df4[df4["rk_n"] <= 2].drop(columns="rk_n")
     
-    # 2) Now define enum by start ordering:
-    #    enum=1 => earlier start (longer period, "reported/YTD")
-    #    enum=2 => later  start (shorter period, "quarter")
+    top = df4[df4["rk_n"] == 1][["adsh", "end", "start", "n"]].rename(columns={"start": "start1", "n": "n1"})
+    sec = df4[df4["rk_n"] == 2][["adsh", "end", "start", "n"]].rename(columns={"start": "start2", "n": "n2"})
+    
+    # 2) Decide whether to keep the 2nd window:
+    #    keep if it is not "too small" vs the top window
+    #    condition to DROP: n2 < 0.5 * n1  (top exceeds second by >50%)
+    pairs = top.merge(sec, how="left", on=["adsh", "end"], sort=False)
+    
+    pairs["keep2"] = pairs["n2"].notna() & (pairs["n2"] >= 0.5 * pairs["n1"])
+    
+    # Reconstruct the kept candidates
+    cand1 = pairs[["adsh", "end", "start1"]].rename(columns={"start1": "start"})
+    cand2 = pairs[pairs["keep2"]][["adsh", "end", "start2"]].rename(columns={"start2": "start"})
+    
+    df4 = pd.concat([cand1, cand2], ignore_index=True)
+    
+    # 3) Assign enum by start ordering (enum=1 earliest start, enum=2 later start)
     df4 = df4.sort_values(by=["adsh", "end", "start"], ascending=[True, True, True], kind="mergesort")
     df4["enum"] = df4.groupby(["adsh", "end"], sort=False).cumcount() + 1
-    
     df4 = df4[["adsh", "start", "end", "enum"]]
+    df4["enum"] = df4["enum"].astype("uint8")
 
     # Align prior-year windows (enum 3/4) based on start dates shifted by -1 year
     py_tol = config.PRIOR_YEAR_ALIGNMENT_TOLERANCE_DAYS
