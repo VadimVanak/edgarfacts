@@ -250,7 +250,7 @@ def apply_arcs_to_figures(
 def apply_arcs_by_version(
     figures_df: pd.DataFrame,
     sub_df: pd.DataFrame,
-    arcs_all_years_df: pd.DataFrame,
+    arcs_df: pd.DataFrame,
     logger,
     *,
     keep_original_first: bool = True,
