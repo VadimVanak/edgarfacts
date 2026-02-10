@@ -223,7 +223,7 @@ def build_base_figures(
             figures_df=figures,
             sub_df=sub_enriched,   # needed for adsh->version mapping
             arcs_df=arcs,
-            logger,
+            logger=logger,
         )
     
     return figures, sub_enriched
