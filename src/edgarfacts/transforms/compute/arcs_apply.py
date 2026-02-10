@@ -264,7 +264,7 @@ def apply_arcs_by_version(
         Wide figures table.
     sub_df:
         Submissions table providing (adsh -> version). Must include columns ['adsh','version'].
-    arcs_all_years_df:
+    arcs_df:
         Arcs for multiple years. Must include columns ['version','seq','from','to','weight'].
         (May include additional columns; they are ignored.)
     logger:
@@ -280,8 +280,8 @@ def apply_arcs_by_version(
     _ensure_required_columns(figures_df)
     if "version" not in sub_df.columns:
         raise ValueError("sub_df must contain a 'version' column")
-    if "version" not in arcs_all_years_df.columns:
-        raise ValueError("arcs_all_years_df must contain a 'version' column")
+    if "version" not in arcs_df.columns:
+        raise ValueError("arcs_df must contain a 'version' column")
 
     # Preserve original tag dtype
     vocab, was_categorical = _build_tag_vocab(figures_df)
@@ -294,7 +294,7 @@ def apply_arcs_by_version(
     work = figures_df.merge(vmap, how="inner", on="adsh", sort=False)
 
     # Encode arcs for all years once (drop strings)
-    arcs_all = arcs_all_years_df[["version", "seq", "from", "to", "weight"]].copy()
+    arcs_all = arcs_df[["version", "seq", "from", "to", "weight"]].copy()
     arcs_all["version"] = pd.to_numeric(arcs_all["version"], errors="coerce").fillna(0).astype("int32")
 
     # Encode arcs against figures vocab (unknown tags dropped)
