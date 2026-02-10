@@ -42,7 +42,7 @@ from .outliers import remove_outliers_parallel
 from .periods import infer_reporting_windows, compute_period_values, compute_instant_period_values
 
 from edgarfacts.transforms.taxonomy.reader import read_taxonomy_arcs_many
-from edgarfacts.transforms.compute.arcs_apply import apply_calculation_arcs
+from edgarfacts.transforms.compute.arcs_apply import apply_arcs_by_version
 
 
 def _ensure_facts_schema(facts_df: pd.DataFrame) -> None:
@@ -218,7 +218,7 @@ def build_base_figures(
         arcs = read_taxonomy_arcs_many([2008, 2009] + list(range(2011, 2026)))
 
         logger.info("Applying calculation arcs")
-        figures = apply_calculation_arcs(
+        figures = apply_arcs_by_version(
             figures_df=figures,
             sub_df=sub_enriched,   # needed for adsh->version mapping
             arcs_df=arcs,
