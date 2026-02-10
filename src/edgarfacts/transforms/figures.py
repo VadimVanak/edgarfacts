@@ -162,6 +162,7 @@ def build_base_figures(
 
     # 5) Infer reporting windows
     windows = infer_reporting_windows(facts, sub_df)
+    print(windows)
 
     # 6) Compute non-instant period values and enrich sub
     period_values, sub_enriched = compute_period_values(facts, sub_df, windows)
