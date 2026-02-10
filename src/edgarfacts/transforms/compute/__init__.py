@@ -1,4 +1,3 @@
-# src/edgarfacts/transforms/compute/__init__.py
 """
 Figure computation utilities for edgarfacts.
 
@@ -21,6 +20,6 @@ Internal modules are intentionally fine-grained to allow unit testing
 on small synthetic datasets.
 """
 
-from .pipeline import transform_figures
+from .companyfacts import compute_missing_with_arcs
 
-__all__ = ["transform_figures"]
+__all__ = ["compute_missing_with_arcs"]
