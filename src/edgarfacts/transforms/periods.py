@@ -94,10 +94,10 @@ def infer_reporting_windows(facts_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.
     
     # 2) Decide whether to keep the 2nd window:
     #    keep if it is not "too small" vs the top window
-    #    condition to DROP: n2 < 0.5 * n1  (top exceeds second by >50%)
+    #    condition to DROP: n2 < 0.3 * n1  (top exceeds second by >70%)
     pairs = top.merge(sec, how="left", on=["adsh", "end"], sort=False)
     
-    pairs["keep2"] = pairs["n2"].notna() & (pairs["n2"] >= 0.5 * pairs["n1"])
+    pairs["keep2"] = pairs["n2"].notna() & (pairs["n2"] >= 0.3 * pairs["n1"])
     
     # Reconstruct the kept candidates
     cand1 = pairs[["adsh", "end", "start1"]].rename(columns={"start1": "start"})
