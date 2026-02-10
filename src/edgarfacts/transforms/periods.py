@@ -232,96 +232,63 @@ def compute_period_values(
 def compute_instant_period_values(
     facts_df: pd.DataFrame,
     windows_df: pd.DataFrame,
-    *,
-    chunk_rows: int = 5_000_000,
 ) -> pd.DataFrame:
-    """
-    Compute value1..value4 for instant facts (start==end) based on window end dates.
-
-    Memory-optimized:
-    - no self-merges of inst
-    - use a single MultiIndex Series lookup
-    - chunked reindex to cap peak RAM
-
-    Output
-    ------
-    inst_values_df: columns ['adsh','tag','value1','value2','value3','value4']
-    """
-    # Minimal projection and dtype normalization
-    df = facts_df[["adsh", "tag", "start", "end", "value"]].copy()
-    df["adsh"] = pd.to_numeric(df["adsh"], errors="raise").astype("int64")
+    df = facts_df.copy()
     df["start"] = df["start"].astype(config.DATETIME_DTYPE)
     df["end"] = df["end"].astype(config.DATETIME_DTYPE)
-    df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
 
-    inst = df[df["start"] == df["end"]][["adsh", "tag", "end", "value"]]
-    if inst.empty:
-        return inst.iloc[0:0].assign(value1=np.nan, value2=np.nan, value3=np.nan, value4=np.nan)[
-            ["adsh", "tag", "value1", "value2", "value3", "value4"]
-        ]
+    inst = df[df["start"] == df["end"]][["adsh", "tag", "end", "value"]].copy()
 
-    # Build end-date maps per enum (adsh -> end_enum)
-    w = windows_df[["adsh", "enum", "end"]].drop_duplicates().copy()
-    w["adsh"] = pd.to_numeric(w["adsh"], errors="raise").astype("int64")
-    w["end"] = w["end"].astype(config.DATETIME_DTYPE)
+    # --- existing code: build end-date lookup per enum ---
+    e = windows_df[["adsh", "enum", "end"]].copy()
+    e = e.pivot(index="adsh", columns="enum", values="end").reset_index()
+    e.columns = ["adsh"] + [f"end_{i}" for i in range(1, len(e.columns))]
 
-    end_map = {}
-    for enum in (1, 2, 3, 4):
-        s = w.loc[w["enum"] == enum, ["adsh", "end"]].drop_duplicates()
-        end_map[enum] = s.set_index("adsh")["end"]
+    out = inst.merge(e, how="left", on="adsh")
 
-    # Single lookup structure: (adsh, tag, end) -> value
-    # Keep tag dtype (category) intact for memory; MultiIndex supports it.
-    values = inst.set_index(["adsh", "tag", "end"])["value"]
-    # (Optional) If duplicates exist, keep last deterministically (should not after earlier dedup)
-    if values.index.has_duplicates:
-        values = values[~values.index.duplicated(keep="last")]
+    def _merge_end(col_end: str, out_col: str, base: pd.DataFrame) -> pd.DataFrame:
+        return base.merge(
+            inst.rename(columns={"end": col_end, "value": out_col})[["adsh", "tag", col_end, out_col]],
+            how="left",
+            on=["adsh", "tag", col_end],
+        )
 
-    # We only need adsh+tag unique pairs as output index.
-    base = inst[["adsh", "tag"]].drop_duplicates(ignore_index=True)
+    out = _merge_end("end_1", "value1", out)
+    out = _merge_end("end_2", "value2", out)
+    out = _merge_end("end_3", "value3", out)
+    out = _merge_end("end_4", "value4", out)
 
-    # Allocate output arrays (float64); fill with NaN by default
-    n = len(base)
-    out_v1 = np.full(n, np.nan, dtype="float64")
-    out_v2 = np.full(n, np.nan, dtype="float64")
-    out_v3 = np.full(n, np.nan, dtype="float64")
-    out_v4 = np.full(n, np.nan, dtype="float64")
+    # --- NEW: fallback fill for special DEI instants into value1 ---
+    # For tags on cover page, dates may not match end_1 exactly; choose closest within tolerance.
+    if "end_1" in out.columns:
+        mask_need = out["value1"].isna() & out["tag"].astype(str).isin(config.SPECIAL_INSTANT_TAGS)
+        if mask_need.any():
+            need = out.loc[mask_need, ["adsh", "tag", "end_1"]].drop_duplicates().copy()
 
-    # Vectorized end lookup per row using Series.reindex on adsh
-    # This avoids merges and keeps memory low.
-    adsh_arr = base["adsh"].to_numpy(dtype="int64", copy=False)
-    tag_arr = base["tag"].to_numpy(copy=False)  # may be object or category codes
+            # Only consider instant rows for these tags
+            inst_sp = inst[inst["tag"].astype(str).isin(config.SPECIAL_INSTANT_TAGS)].copy()
+            if not inst_sp.empty:
+                # Join candidate instants by (adsh, tag), compute day distance to end_1,
+                # and pick the closest within tolerance.
+                cand = need.merge(inst_sp, how="left", on=["adsh", "tag"], suffixes=("", "_inst"))
+                cand["dist_days"] = (cand["end"] - cand["end_1"]).abs().dt.total_seconds() / 86400.0
 
-    e1 = end_map[1].reindex(adsh_arr).to_numpy(copy=False)
-    e2 = end_map[2].reindex(adsh_arr).to_numpy(copy=False)
-    e3 = end_map[3].reindex(adsh_arr).to_numpy(copy=False)
-    e4 = end_map[4].reindex(adsh_arr).to_numpy(copy=False)
+                tol = float(getattr(config, "SPECIAL_INSTANT_TOL_DAYS", 30))
+                cand = cand[cand["dist_days"].notna() & (cand["dist_days"] <= tol)]
 
-    # Chunked MultiIndex reindex lookups to cap peak RAM
-    def _fill_chunk(start: int, stop: int) -> None:
-        idx1 = pd.MultiIndex.from_arrays([adsh_arr[start:stop], tag_arr[start:stop], e1[start:stop]])
-        idx2 = pd.MultiIndex.from_arrays([adsh_arr[start:stop], tag_arr[start:stop], e2[start:stop]])
-        idx3 = pd.MultiIndex.from_arrays([adsh_arr[start:stop], tag_arr[start:stop], e3[start:stop]])
-        idx4 = pd.MultiIndex.from_arrays([adsh_arr[start:stop], tag_arr[start:stop], e4[start:stop]])
+                if not cand.empty:
+                    best = (
+                        cand.sort_values(["adsh", "tag", "dist_days", "end"], kind="mergesort")
+                            .drop_duplicates(["adsh", "tag"], keep="first")
+                            .rename(columns={"value": "value1_fallback"})
+                            [["adsh", "tag", "value1_fallback"]]
+                    )
 
-        out_v1[start:stop] = values.reindex(idx1).to_numpy()
-        out_v2[start:stop] = values.reindex(idx2).to_numpy()
-        out_v3[start:stop] = values.reindex(idx3).to_numpy()
-        out_v4[start:stop] = values.reindex(idx4).to_numpy()
+                    out = out.merge(best, how="left", on=["adsh", "tag"])
+                    out["value1"] = out["value1"].fillna(out["value1_fallback"])
+                    out = out.drop(columns=["value1_fallback"])
 
-    if chunk_rows is None or chunk_rows <= 0:
-        _fill_chunk(0, n)
-    else:
-        for start in range(0, n, chunk_rows):
-            stop = min(start + chunk_rows, n)
-            _fill_chunk(start, stop)
-
-    out = base.copy()
-    out["value1"] = out_v1
-    out["value2"] = out_v2
-    out["value3"] = out_v3
-    out["value4"] = out_v4
-    return out[["adsh", "tag", "value1", "value2", "value3", "value4"]]
+    return out[["adsh", "tag", "value1", "value2", "value3", "value4"]].copy()
 
 
 def _enrich_sub_with_windows(sub_df: pd.DataFrame, windows_df: pd.DataFrame) -> pd.DataFrame:
