@@ -215,7 +215,7 @@ def build_base_figures(
     # 10) Apply calculation arcs at the end (fills missing tags, marks is_computed=True)
     if apply_arcs:
         logger.info("Loading US-GAAP calculation arcs")
-        arcs = read_taxonomy_arcs_many([2008, 2009] + list(range(2011, 2025))
+        arcs = read_taxonomy_arcs_many([2008, 2009] + list(range(2011, 2026)))
 
         logger.info("Applying calculation arcs")
         figures = apply_calculation_arcs(
