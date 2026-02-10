@@ -66,3 +66,16 @@ PRIOR_YEAR_ALIGNMENT_TOLERANCE_DAYS = 10
 
 # Canonical datetime precision for all transformed outputs
 DATETIME_DTYPE = "datetime64[s]"
+
+
+# =============================================================================
+# Tags requires special handling
+# =============================================================================
+
+SPECIAL_INSTANT_TAGS = {
+    "EntityCommonStockSharesOutstanding",
+    "EntityPublicFloat",
+}
+
+SPECIAL_INSTANT_TOL_DAYS = 30
+
