@@ -122,6 +122,7 @@ def build_base_figures(
     *,
     outlier_workers: Optional[int] = None,
     use_process_pool: bool = True,
+    apply_arcs: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build base figures (reported/quarterly/prior-year) from raw facts and submissions.
