@@ -41,7 +41,7 @@ from .amendments import canonicalize_and_merge_amendments
 from .outliers import remove_outliers_parallel
 from .periods import infer_reporting_windows, compute_period_values, compute_instant_period_values
 
-from edgarfacts.transforms.taxonomy.reader import read_taxonomies_parallel
+from edgarfacts.transforms.taxonomy.reader import read_taxonomy_arcs_many
 from edgarfacts.transforms.compute.arcs_apply import apply_calculation_arcs
 
 
@@ -215,7 +215,7 @@ def build_base_figures(
     # 10) Apply calculation arcs at the end (fills missing tags, marks is_computed=True)
     if apply_arcs:
         logger.info("Loading US-GAAP calculation arcs")
-        arcs = read_taxonomies_parallel()
+        arcs = read_taxonomy_arcs_many([2008, 2009] + list(range(2011, 2025))
 
         logger.info("Applying calculation arcs")
         figures = apply_calculation_arcs(
