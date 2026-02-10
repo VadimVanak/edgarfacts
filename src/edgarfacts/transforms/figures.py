@@ -1,4 +1,3 @@
-# src/edgarfacts/transforms/compute/figures.py
 """
 Build the base "wide" figures table from raw SEC company facts.
 
@@ -41,6 +40,9 @@ from edgarfacts.transforms import config
 from .amendments import canonicalize_and_merge_amendments
 from .outliers import remove_outliers_parallel
 from .periods import infer_reporting_windows, compute_period_values, compute_instant_period_values
+
+from edgarfacts.transforms.taxonomy.reader import read_taxonomies_parallel
+from edgarfacts.transforms.compute.arcs_apply import apply_calculation_arcs
 
 
 def _ensure_facts_schema(facts_df: pd.DataFrame) -> None:
@@ -210,4 +212,16 @@ def build_base_figures(
         if c in sub_enriched.columns:
             sub_enriched[c] = pd.to_datetime(sub_enriched[c]).astype(config.DATETIME_DTYPE)
 
+    # 10) Apply calculation arcs at the end (fills missing tags, marks is_computed=True)
+    if apply_arcs:
+        logger.info("Loading US-GAAP calculation arcs")
+        arcs = read_taxonomies_parallel()
+
+        logger.info("Applying calculation arcs")
+        figures = apply_calculation_arcs(
+            figures_df=figures,
+            sub_df=sub_enriched,   # needed for adsh->version mapping
+            arcs_df=arcs,
+        )
+    
     return figures, sub_enriched
