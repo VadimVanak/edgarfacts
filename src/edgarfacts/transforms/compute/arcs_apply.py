@@ -200,18 +200,18 @@ def apply_arcs_to_figures(
             if a.empty:
                 continue
 
-            # Join on integer tag ids (source tag)
-            src = out.merge(a, how="inner", left_on="tag_id", right_on="from_id", sort=False)
+            # Join on integer tag ids (component tag = to_id)
+            src = out.merge(a, how="inner", left_on="tag_id", right_on="to_id", sort=False)
             if src.empty:
                 continue
-
-            # Weighted contribution to target tag_id
-            # Drop source tag_id/from_id, rename to_id -> tag_id
-            src = src.drop(columns=["tag_id", "from_id"]).rename(columns={"to_id": "tag_id"})
+            
+            # Weighted contribution to total tag_id (from_id)
+            # Drop component tag_id/to_id, rename from_id -> tag_id
+            src = src.drop(columns=["tag_id", "to_id"]).rename(columns={"from_id": "tag_id"})
             for c in _VALUE_COLS:
                 src[c] = src[c] * src["weight"]
             src = src.drop(columns=["weight"])
-
+          
             # Aggregate contributions per (adsh, tag_id)
             comp = (
                 src.groupby(["adsh", "tag_id"], as_index=False, sort=False)
@@ -331,13 +331,14 @@ def apply_arcs_by_version(
         out_enc = f_enc
         for s in seqs:
             a = a_v[a_v["seq"] == s][["from_id", "to_id", "weight"]]
-            src = out_enc.merge(a, how="inner", left_on="tag_id", right_on="from_id", sort=False)
+            src = out_enc.merge(a, how="inner", left_on="tag_id", right_on="to_id", sort=False)
             if src.empty:
                 continue
-            src = src.drop(columns=["tag_id", "from_id"]).rename(columns={"to_id": "tag_id"})
+            src = src.drop(columns=["tag_id", "to_id"]).rename(columns={"from_id": "tag_id"})
             for c in _VALUE_COLS:
                 src[c] = src[c] * src["weight"]
             src = src.drop(columns=["weight"])
+
             comp = (
                 src.groupby(["adsh", "tag_id"], as_index=False, sort=False)
                 .sum(min_count=1)
