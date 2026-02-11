@@ -2,7 +2,8 @@
 Apply US-GAAP calculation arcs to a figures table.
 
 This module computes missing (adsh, tag) figures by aggregating weighted
-source tags according to calculation linkbase arcs.
+source tags according to calculation linkbase arcs. Note that XBRL taxonomies 
+uses field 'to' as SOURCE.
 
 Important performance correction
 --------------------------------
