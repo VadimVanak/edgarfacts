@@ -41,6 +41,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import CategoricalDtype
 
 
 _VALUE_COLS = [
@@ -367,3 +368,213 @@ def apply_arcs_by_version(
 
     out = pd.concat(out_frames, ignore_index=True)
     return out
+
+
+def filter_unreliable_arcs(
+    figures_df: pd.DataFrame,
+    sub_df: pd.DataFrame,
+    arcs_all_years_df: pd.DataFrame,
+    *,
+    value_col: str = "reported_figure",
+    min_tests_per_equation: int = 50,
+    max_fail_rate: float = 0.05,
+    rtol: float = 1e-5,
+    atol: float = 1e-4,
+    require_full_sources: bool = True,
+    logger=None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Filter out unreliable XBRL calculation equations (arcs) based on observed filings.
+
+    XBRL calculationArc semantics:
+        FROM (summation/total) = Σ weight * TO (component)
+
+    Therefore reliability is computed per equation keyed by (version, from).
+    If an equation fails too often on filings where it is fully testable, all its arcs are dropped.
+
+    Parameters
+    ----------
+    figures_df:
+        Must contain columns ['adsh','tag', value_col]. 'tag' should be categorical (preferred).
+    sub_df:
+        Must contain ['adsh','version'].
+    arcs_all_years_df:
+        Must contain ['version','from','to','weight'] at minimum.
+        Extra columns are preserved in the returned arcs_filtered.
+    value_col:
+        Which figures column to validate against (e.g. 'reported_figure').
+    min_tests_per_equation:
+        Minimum number of testable (adsh, from) observations required to judge an equation.
+    max_fail_rate:
+        Drop equations where fail_rate > max_fail_rate.
+    rtol, atol:
+        Tolerance for equality check: abs(pred - y) <= atol + rtol * max(1, abs(y)).
+    require_full_sources:
+        If True, only test rows where *all* TO components are present (non-NA).
+        If False, tests allow partial components (usually leads to high failure rates).
+    logger:
+        Optional logger for progress.
+
+    Returns
+    -------
+    arcs_filtered : pd.DataFrame
+        arcs_all_years_df filtered to reliable equations. If no equations qualify as reliable
+        (e.g., too few tests everywhere), returns arcs_all_years_df unchanged (safe default).
+    stats_df : pd.DataFrame
+        Per-equation diagnostics with columns:
+        ['version','from','n_terms','n_tests','n_fail','fail_rate'].
+    """
+    if "tag" not in figures_df.columns or "adsh" not in figures_df.columns:
+        raise ValueError("figures_df must contain columns ['adsh','tag']")
+    if value_col not in figures_df.columns:
+        raise ValueError(f"value_col='{value_col}' not present in figures_df")
+    if not {"adsh", "version"}.issubset(sub_df.columns):
+        raise ValueError("sub_df must contain columns ['adsh','version']")
+    if not {"version", "from", "to", "weight"}.issubset(arcs_all_years_df.columns):
+        raise ValueError("arcs_all_years_df must contain columns ['version','from','to','weight']")
+
+    # Best practice: require categorical tags to avoid string memory blowups.
+    if not isinstance(figures_df["tag"].dtype, CategoricalDtype):
+        raise ValueError("figures_df['tag'] must be categorical for memory-safe filtering")
+  
+    cats = figures_df["tag"].cat.categories
+
+    # Attach version to figures
+    vmap = sub_df[["adsh", "version"]].drop_duplicates().copy()
+    vmap["adsh"] = pd.to_numeric(vmap["adsh"], errors="raise").astype("int64")
+    vmap["version"] = pd.to_numeric(vmap["version"], errors="coerce").fillna(0).astype("int32")
+
+    work = figures_df[["adsh", "tag", value_col]].merge(vmap, on="adsh", how="inner", sort=False)
+
+    # Align arcs endpoints to figures tag universe (categorical => codes, no long-string joins)
+    arcs = arcs_all_years_df.copy()
+    arcs["version"] = pd.to_numeric(arcs["version"], errors="coerce").fillna(0).astype("int32")
+    arcs["weight"] = pd.to_numeric(arcs["weight"], errors="raise").astype("float64")
+
+    arcs["from"] = pd.Categorical(arcs["from"].astype(str), categories=cats)
+    arcs["to"] = pd.Categorical(arcs["to"].astype(str), categories=cats)
+
+    # Drop arcs referencing tags outside the figure universe
+    arcs = arcs[arcs["from"].notna() & arcs["to"].notna()].copy()
+
+    stats_frames = []
+    keep_frames = []
+
+    # Deterministic iteration order
+    for v in np.sort(work["version"].unique()):
+        f_v = work[work["version"] == v][["adsh", "tag", value_col]]
+        a_v = arcs[arcs["version"] == v][["from", "to", "weight"]]
+        if f_v.empty or a_v.empty:
+            continue
+
+        # term counts per equation (key: from)
+        terms = (
+            a_v.groupby(["from"], observed=True, sort=False)
+            .size()
+            .rename("n_terms")
+            .reset_index()
+        )
+
+        # Join component facts to arcs on TO (component)
+        src = f_v.merge(a_v, left_on="tag", right_on="to", how="inner", sort=False)
+        if src.empty:
+            continue
+
+        x = pd.to_numeric(src[value_col], errors="coerce").astype("float64")
+        contrib = x * src["weight"].astype("float64")
+
+        pred = (
+            pd.DataFrame(
+                {
+                    "adsh": src["adsh"].to_numpy(),
+                    "from": src["from"].to_numpy(),
+                    "pred_part": contrib.to_numpy(),
+                    "present": x.notna().to_numpy(),
+                }
+            )
+            .groupby(["adsh", "from"], observed=True, sort=False, as_index=False)
+            .agg(
+                pred=("pred_part", lambda s: s.sum(min_count=1)),
+                n_present=("present", "sum"),
+            )
+        )
+
+        # Actual totals (FROM)
+        from_vals = terms["from"]
+        tgt = (
+            f_v[f_v["tag"].isin(from_vals)]
+            .rename(columns={"tag": "from", value_col: "y"})
+            .copy()
+        )
+
+        test = pred.merge(tgt, on=["adsh", "from"], how="inner", sort=False)
+        if test.empty:
+            continue
+
+        test = test.merge(terms, on="from", how="left", sort=False)
+
+        m = test["y"].notna() & test["pred"].notna()
+        if require_full_sources:
+            m = m & (test["n_present"] == test["n_terms"])
+        test = test[m]
+        if test.empty:
+            continue
+
+        diff = (test["pred"] - test["y"]).abs()
+        tol = atol + rtol * np.maximum(1.0, test["y"].abs())
+        ok = diff <= tol
+
+        eq_stats = (
+            pd.DataFrame({"from": test["from"].to_numpy(), "ok": ok.to_numpy()})
+            .groupby(["from"], observed=True, sort=False)
+            .agg(
+                n_tests=("ok", "size"),
+                n_fail=("ok", lambda s: (~s).sum()),
+            )
+            .reset_index()
+        )
+        eq_stats.insert(0, "version", v)
+        eq_stats = eq_stats.merge(terms, on="from", how="left", sort=False)
+        eq_stats["fail_rate"] = eq_stats["n_fail"] / eq_stats["n_tests"]
+        stats_frames.append(eq_stats)
+
+        reliable = eq_stats[
+            (eq_stats["n_tests"] >= min_tests_per_equation)
+            & (eq_stats["fail_rate"] <= max_fail_rate)
+        ][["version", "from"]]
+        keep_frames.append(reliable)
+
+        if logger is not None:
+            logger.info(
+                f"Arc reliability v={int(v)}: equations={len(eq_stats)}, reliable={len(reliable)}"
+            )
+
+    stats_df = (
+        pd.concat(stats_frames, ignore_index=True)
+        if stats_frames
+        else pd.DataFrame(columns=["version", "from", "n_terms", "n_tests", "n_fail", "fail_rate"])
+    )
+
+    keep = (
+        pd.concat(keep_frames, ignore_index=True)
+        if keep_frames
+        else pd.DataFrame(columns=["version", "from"])
+    )
+
+    # Safe default: if nothing qualifies as reliable, do not drop anything.
+    if keep.empty:
+        return arcs_all_years_df, stats_df
+
+    # Filter arcs by reliable equations (version, from)
+    # Note: arcs currently has 'from' as categorical; keep uses same dtype because it comes from eq_stats.
+    arcs_filtered = arcs.merge(keep, on=["version", "from"], how="inner", sort=False)
+
+    # Restore schema consistency: keep original columns order as much as possible.
+    # Also restore from/to back to str if your downstream expects objects.
+    arcs_filtered = arcs_filtered.copy()
+    arcs_filtered["from"] = arcs_filtered["from"].astype(str)
+    arcs_filtered["to"] = arcs_filtered["to"].astype(str)
+
+    # If the input had extra columns beyond version/from/to/weight, they are preserved already.
+    return arcs_filtered, stats_df
+
