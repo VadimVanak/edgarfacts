@@ -38,7 +38,7 @@ Existing reported values are not overwritten unless explicitly requested.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Iterable, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -592,3 +592,217 @@ def filter_unreliable_arcs(
     # Preserve extra columns from original arcs_all_years_df:
     # We filtered from a copy of arcs_all_years_df, so extras are already present.
     return arcs_filtered, stats_df
+
+
+def expand_arcs_with_single_variable_rearrangements(
+    arcs_df: pd.DataFrame,
+    *,
+    pivot_weights: Tuple[float, float] = (1.0, -1.0),
+    enforce_signature_unique_seq: bool = True,
+    renumber_seq: bool = True,
+    max_bump_iters: int = 50,
+) -> pd.DataFrame:
+    """
+    Expand reliable XBRL calculation equations into "artificial" rearrangements.
+
+    XBRL calc semantics (per equation group):
+        FROM (total) = Σ_i weight_i * TO_i (components)
+
+    For each equation (version, statement, seq, FROM) with components {TO_i},
+    generate rearranged equations that solve for each component TO_k (pivot) when pivot weight is ±1:
+        TO_k = (w_k)*FROM + Σ_{i≠k} ( -w_i / w_k ) * TO_i
+
+    Since w_i, w_k ∈ {+1,-1}, rearranged weights remain ±1.
+
+    Seq handling:
+    - Original equations keep their seq.
+    - Artificial rearranged equations start at seq+1.
+    - Optionally enforce that within a given (version, statement, seq),
+      two different FROM equations with the same component tag-set must not share the same seq.
+      If a collision exists, deterministically "bump" seq for the losing equations, potentially creating new seq levels.
+    - Optionally renumber seq to a compact 0..K-1 per version (preserving order).
+
+    Parameters
+    ----------
+    arcs_df:
+        Must include columns: ['version','statement','seq','from','to','weight'].
+        It is assumed arcs_df has already been filtered to a reliable subset.
+    pivot_weights:
+        Only generate rearrangements for pivot components whose weight is in this set.
+        Default only allows ±1.
+    enforce_signature_unique_seq:
+        Enforce the constraint:
+          within (version, statement, seq), if two different FROM equations have the same set of TO tags,
+          they cannot share the same seq. Collisions are resolved deterministically by bumping seq.
+    renumber_seq:
+        If True, renumber seq values to a compact range per version (preserving relative order).
+    max_bump_iters:
+        Maximum iterations for collision resolution (should converge quickly for clean inputs).
+
+    Returns
+    -------
+    pd.DataFrame
+        Expanded arcs with the same schema as arcs_df (no 'is_artificial' column emitted).
+        Output is deterministically sorted by (version, statement, seq, from, to, weight).
+    """
+    required = {"version", "statement", "seq", "from", "to", "weight"}
+    missing = sorted(required.difference(arcs_df.columns))
+    if missing:
+        raise ValueError(f"arcs_df missing required columns: {missing}")
+
+    # Work on a minimal copy
+    base = arcs_df[["version", "statement", "seq", "from", "to", "weight"]].copy()
+
+    # Normalize dtypes deterministically
+    base["version"] = pd.to_numeric(base["version"], errors="coerce").fillna(0).astype("int32")
+    base["seq"] = pd.to_numeric(base["seq"], errors="raise").astype("int32")
+    base["weight"] = pd.to_numeric(base["weight"], errors="raise").astype("float64")
+
+    # Keep statement/from/to as-is (often categorical); we will only create lightweight string views for signatures.
+    # For deterministic operations, treat missing as invalid:
+    base = base.dropna(subset=["statement", "from", "to"])
+
+    # ---- Step 1: canonicalize each equation group (version, statement, seq, from) ----
+    # Deduplicate component arcs within each equation (same 'to' repeated), deterministically.
+    # If duplicates exist with conflicting weights, we keep the first by stable sort on (to, weight).
+    base = base.sort_values(["version", "statement", "seq", "from", "to", "weight"], kind="mergesort")
+    base = base.drop_duplicates(subset=["version", "statement", "seq", "from", "to"], keep="first")
+
+    # ---- Step 2: generate artificial rearranged equations ----
+    # We generate by iterating equation groups. This is small after your reliability filter (<~100 equations),
+    # so Python-level loops are acceptable and keep logic explicit/deterministic.
+    artificial_rows: List[dict] = []
+
+    group_keys = ["version", "statement", "seq", "from"]
+    for (v, stmt, s, frm), g in base.groupby(group_keys, sort=False, observed=True):
+        # component list for this equation
+        tos = g["to"].tolist()
+        ws = g["weight"].to_numpy(dtype="float64")
+
+        if len(tos) == 0:
+            continue
+
+        # Generate one rearranged equation per pivot component (to_k) where weight is allowed.
+        for k, (to_k, w_k) in enumerate(zip(tos, ws)):
+            if float(w_k) not in pivot_weights:
+                continue
+
+            # New equation total = to_k, components include original total 'frm' and other components.
+            new_from = to_k
+            new_seq = int(s) + 1
+
+            # Component: original total (frm) with weight w_k
+            artificial_rows.append(
+                {"version": v, "statement": stmt, "seq": new_seq, "from": new_from, "to": frm, "weight": float(w_k)}
+            )
+
+            # Components: other tos with weight -w_i / w_k (still ±1 for ±1 weights)
+            for to_i, w_i in zip(tos, ws):
+                if to_i == to_k:
+                    continue
+                artificial_rows.append(
+                    {
+                        "version": v,
+                        "statement": stmt,
+                        "seq": new_seq,
+                        "from": new_from,
+                        "to": to_i,
+                        "weight": float(-w_i / w_k),
+                    }
+                )
+
+    if artificial_rows:
+        art = pd.DataFrame(artificial_rows)
+        art["version"] = art["version"].astype("int32")
+        art["seq"] = art["seq"].astype("int32")
+        art["weight"] = art["weight"].astype("float64")
+        # Ensure deterministic ordering and dedupe any accidental duplicates
+        art = art.sort_values(["version", "statement", "seq", "from", "to", "weight"], kind="mergesort")
+        art = art.drop_duplicates(subset=["version", "statement", "seq", "from", "to"], keep="first")
+        expanded = pd.concat([base, art], ignore_index=True)
+    else:
+        expanded = base
+
+    expanded = expanded.sort_values(["version", "statement", "seq", "from", "to", "weight"], kind="mergesort")
+    expanded = expanded.drop_duplicates(subset=["version", "statement", "seq", "from", "to"], keep="first")
+
+    # ---- Step 3: enforce "same TO-tag set cannot share seq for different FROM" constraint ----
+    # Interpretation (per your note):
+    # within (version, statement, seq), if two DIFFERENT equations have the same set of TO tags, they must not share seq.
+    # We resolve by bumping seq of losing equations deterministically.
+    if enforce_signature_unique_seq:
+        # We'll operate at the equation level: one row per (version, statement, seq, from) with a signature of its TO-set.
+        # Then bump seq for collisions and propagate back to arc rows.
+        for _iter in range(max_bump_iters):
+            # Build equation signatures
+            eq = (
+                expanded.groupby(["version", "statement", "seq", "from"], observed=True, sort=False)["to"]
+                .apply(lambda s: tuple(sorted(pd.unique(s.astype(str)))))
+                .reset_index(name="to_sig")
+            )
+
+            # Find collisions: same (version, statement, seq, to_sig) with multiple distinct 'from'
+            coll = (
+                eq.groupby(["version", "statement", "seq", "to_sig"], observed=True, sort=False)["from"]
+                .nunique()
+                .reset_index(name="n_from")
+            )
+            coll = coll[coll["n_from"] > 1]
+            if coll.empty:
+                break
+
+            # Join back to get all colliding equations
+            eqc = eq.merge(coll[["version", "statement", "seq", "to_sig"]], on=["version", "statement", "seq", "to_sig"], how="inner", sort=False)
+
+            # For each collision group, keep smallest 'from' at original seq; bump others by rank
+            # Deterministic rank: stable sort on 'from' (string).
+            eqc = eqc.sort_values(["version", "statement", "seq", "to_sig", "from"], kind="mergesort")
+            eqc["_rank"] = eqc.groupby(["version", "statement", "seq", "to_sig"], observed=True, sort=False).cumcount()
+            # rank 0 stays; rank 1 -> seq+1, rank 2 -> seq+2, ...
+            eqc["seq_new"] = (eqc["seq"].astype("int64") + eqc["_rank"].astype("int64")).astype("int32")
+
+            # Apply only where seq_new differs
+            upd = eqc[eqc["seq_new"] != eqc["seq"]][["version", "statement", "seq", "from", "seq_new"]]
+            if upd.empty:
+                break
+
+            # Update expanded: match on exact equation identity (version, statement, seq, from)
+            expanded = expanded.merge(
+                upd,
+                on=["version", "statement", "seq", "from"],
+                how="left",
+                sort=False,
+            )
+            expanded["seq"] = expanded["seq_new"].fillna(expanded["seq"]).astype("int32")
+            expanded = expanded.drop(columns=["seq_new"])
+
+            expanded = expanded.sort_values(["version", "statement", "seq", "from", "to", "weight"], kind="mergesort")
+        else:
+            raise RuntimeError(
+                f"expand_arcs_with_single_variable_rearrangements: seq collision resolution did not converge "
+                f"after {max_bump_iters} iterations"
+            )
+
+    # ---- Step 4: renumber seq to compact range per version (optional) ----
+    if renumber_seq:
+        # Preserve global order per version across all statements.
+        # Deterministic: map sorted unique seqs in that version to 0..K-1.
+        def _renumber_one_version(dfv: pd.DataFrame) -> pd.DataFrame:
+            uniq = np.sort(dfv["seq"].unique())
+            mapper = {int(old): int(new) for new, old in enumerate(uniq)}
+            out = dfv.copy()
+            out["seq"] = out["seq"].map(mapper).astype("int32")
+            return out
+
+        expanded = (
+            expanded.groupby("version", group_keys=False, observed=True, sort=False)
+            .apply(_renumber_one_version)
+            .reset_index(drop=True)
+        )
+
+    # Final deterministic sort
+    expanded = expanded.sort_values(["version", "statement", "seq", "from", "to", "weight"], kind="mergesort").reset_index(drop=True)
+
+    # Return only the original schema (is_artificial stays internal and is not emitted)
+    return expanded[["version", "statement", "seq", "from", "to", "weight"]]
+
