@@ -44,6 +44,7 @@ from .periods import infer_reporting_windows, compute_period_values, compute_ins
 from edgarfacts.transforms.taxonomy.reader import read_taxonomy_arcs_many
 from edgarfacts.transforms.compute.arcs_apply import apply_arcs_by_version
 
+import gc
 
 def _ensure_facts_schema(facts_df: pd.DataFrame) -> None:
     req = {"adsh", "tag", "start", "end", "value"}
@@ -162,13 +163,16 @@ def build_base_figures(
 
     # 5) Infer reporting windows
     windows = infer_reporting_windows(facts, sub_df)
+    gc.collect()
 
     # 6) Compute non-instant period values and enrich sub
     period_values, sub_enriched = compute_period_values(facts, sub_df, windows)
     logger.info("Non-instant values computed")
+    gc.collect()
 
     # 7) Compute instant period values (start==end) using window end dates
     inst_values = compute_instant_period_values(facts, windows)
+    gc.collect()
     logger.info("Instant values computed")
 
     # 8) Combine with deterministic priority: non-instant first, then instants
