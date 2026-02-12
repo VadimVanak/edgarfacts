@@ -262,7 +262,6 @@ def compute_instant_period_values(
     # Keep last deterministically (stable mergesort)
     inst.sort_values(["adsh", "tag", "end"], kind="mergesort", inplace=True)
     inst.drop_duplicates(subset=["adsh", "tag", "end"], keep="last", inplace=True)
-    print('step 1 done')
 
     # 2) Build end lookup per adsh: end_1..end_4 (windows_df is much smaller than inst)
     w = windows_df.loc[:, ["adsh", "enum", "end"]].copy()
@@ -276,30 +275,30 @@ def compute_instant_period_values(
         if i not in ends.columns:
             ends[i] = pd.NaT
     ends = ends[[1, 2, 3, 4]].rename(columns={1: "end_1", 2: "end_2", 3: "end_3", 4: "end_4"}).reset_index()
-    print('step 2 done')
 
     # 3) Base rows: one per (adsh, tag) that has at least one instant
     base = inst.loc[:, ["adsh", "tag"]].drop_duplicates()
     base = base.merge(ends, how="left", on="adsh", sort=False)
-    print('step 3 done')
 
     # 4) Build an indexed Series for lookup: (adsh, tag, end) -> value
     # This is the only "index structure" we build; it replaces 4 merges.
     inst_idx = inst.set_index(["adsh", "tag", "end"])["value"]
     # Ensure fast index operations
     inst_idx = inst_idx.sort_index()
-    print('step 4 done')
 
     # 5) Vectorized lookup for each end_i
     # Using MultiIndex.from_arrays to avoid creating a big temporary DataFrame per join.
-    for i in (1, 2, 3, 4):
+    for i in (1,2,3,4):
         e = base[f"end_{i}"]
-        # If end_i is NaT, the lookup should yield NaN
-        keys = pd.MultiIndex.from_arrays([base["adsh"].to_numpy(), base["tag"].to_numpy(), e.to_numpy()])
+        keys = pd.MultiIndex.from_arrays(
+            [base["adsh"].to_numpy(), base["tag"].to_numpy(), e.to_numpy()],
+            names=["adsh","tag","end"]
+        )
         base[f"value{i}"] = inst_idx.reindex(keys).to_numpy()
-
+        del keys
+        gc.collect()
+    
     out = base.loc[:, ["adsh", "tag", "value1", "value2", "value3", "value4"]].copy()
-    print('step 1 done')
 
     # 6) Optional: special-tag fallback (only for value1) if you enabled it in config
     # Keeps this cheap by operating on a tiny subset.
