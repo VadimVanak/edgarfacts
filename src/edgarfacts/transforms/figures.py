@@ -165,10 +165,11 @@ def build_base_figures(
 
     # 6) Compute non-instant period values and enrich sub
     period_values, sub_enriched = compute_period_values(facts, sub_df, windows)
+    logger.info("Non-instant values computed")
 
     # 7) Compute instant period values (start==end) using window end dates
     inst_values = compute_instant_period_values(facts, windows)
-    logger.info(f"Period values computed")
+    logger.info("Instant values computed")
 
     # 8) Combine with deterministic priority: non-instant first, then instants
     # (mirrors original approach)
