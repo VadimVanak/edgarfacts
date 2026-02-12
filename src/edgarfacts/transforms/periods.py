@@ -230,104 +230,79 @@ def compute_period_values(
     return period_values, sub_enriched
 
 
-def compute_instant_period_values(
+def compute_instant_period_values_chunked(
     facts_df: pd.DataFrame,
     windows_df: pd.DataFrame,
+    *,
+    adsh_chunk_size: int = 200_000,   # tune: 100k–500k depending on RAM
 ) -> pd.DataFrame:
-    """
-    Memory-optimized instant period values.
-
-    Returns columns: ['adsh','tag','value1','value2','value3','value4']
-    for tags where start==end in facts_df.
-
-    Notes:
-    - Avoids 4 self-merges; uses an indexed Series lookup instead.
-    - Keeps tag categorical if it already is categorical.
-    - Assumes windows_df contains ['adsh','enum','end'].
-    """
-
-    # 1) Keep only needed columns and ensure datetime64[s]
+    # Instants only
     inst = facts_df.loc[:, ["adsh", "tag", "start", "end", "value"]]
-    # Filter instants without copying full facts
     inst = inst[inst["start"] == inst["end"]].loc[:, ["adsh", "tag", "end", "value"]]
-
     if inst.empty:
-        return pd.DataFrame(columns=["adsh", "tag", "value1", "value2", "value3", "value4"])
+        return pd.DataFrame(columns=["adsh","tag","value1","value2","value3","value4"])
 
+    # Normalize minimal dtypes
     inst = inst.copy()
     inst["adsh"] = pd.to_numeric(inst["adsh"], errors="raise").astype("int64")
     inst["end"] = pd.to_datetime(inst["end"]).astype(config.DATETIME_DTYPE)
     inst["value"] = pd.to_numeric(inst["value"], errors="coerce").astype("float64")
 
-    # Drop exact duplicates early (huge win if duplicates exist)
-    # Keep last deterministically (stable mergesort)
-    inst.sort_values(["adsh", "tag", "end"], kind="mergesort", inplace=True)
-    inst.drop_duplicates(subset=["adsh", "tag", "end"], keep="last", inplace=True)
+    # Dedup for smaller index
+    inst.sort_values(["adsh","tag","end"], kind="mergesort", inplace=True)
+    inst.drop_duplicates(["adsh","tag","end"], keep="last", inplace=True)
 
-    # 2) Build end lookup per adsh: end_1..end_4 (windows_df is much smaller than inst)
-    w = windows_df.loc[:, ["adsh", "enum", "end"]].copy()
+    # Build end_1..end_4 mapping (small)
+    w = windows_df.loc[:, ["adsh","enum","end"]].copy()
     w["adsh"] = pd.to_numeric(w["adsh"], errors="raise").astype("int64")
     w["end"] = pd.to_datetime(w["end"]).astype(config.DATETIME_DTYPE)
     w["enum"] = pd.to_numeric(w["enum"], errors="raise").astype("uint8")
 
     ends = w.pivot(index="adsh", columns="enum", values="end")
-    # Ensure columns 1..4 exist
-    for i in (1, 2, 3, 4):
+    for i in (1,2,3,4):
         if i not in ends.columns:
             ends[i] = pd.NaT
-    ends = ends[[1, 2, 3, 4]].rename(columns={1: "end_1", 2: "end_2", 3: "end_3", 4: "end_4"}).reset_index()
+    ends = ends[[1,2,3,4]].rename(columns={1:"end_1",2:"end_2",3:"end_3",4:"end_4"}).reset_index()
 
-    # 3) Base rows: one per (adsh, tag) that has at least one instant
-    base = inst.loc[:, ["adsh", "tag"]].drop_duplicates()
-    base = base.merge(ends, how="left", on="adsh", sort=False)
+    # We will iterate over adsh present in inst (not all ends)
+    adsh_all = inst["adsh"].unique()
+    adsh_all.sort()
 
-    # 4) Build an indexed Series for lookup: (adsh, tag, end) -> value
-    # This is the only "index structure" we build; it replaces 4 merges.
-    inst_idx = inst.set_index(["adsh", "tag", "end"])["value"]
-    # Ensure fast index operations
-    inst_idx = inst_idx.sort_index()
+    out_chunks = []
+    for lo in range(0, len(adsh_all), adsh_chunk_size):
+        adsh_chunk = adsh_all[lo:lo+adsh_chunk_size]
 
-    # 5) Vectorized lookup for each end_i
-    # Using MultiIndex.from_arrays to avoid creating a big temporary DataFrame per join.
-    for i in (1,2,3,4):
-        e = base[f"end_{i}"]
-        keys = pd.MultiIndex.from_arrays(
-            [base["adsh"].to_numpy(), base["tag"].to_numpy(), e.to_numpy()],
-            names=["adsh","tag","end"]
-        )
-        base[f"value{i}"] = inst_idx.reindex(keys).to_numpy()
-        del keys
+        inst_c = inst[inst["adsh"].isin(adsh_chunk)]
+        if inst_c.empty:
+            continue
+
+        # base rows for this chunk
+        base = inst_c.loc[:, ["adsh","tag"]].drop_duplicates()
+        base = base.merge(ends, how="left", on="adsh", sort=False)
+
+        # Build chunk index once
+        inst_idx = inst_c.set_index(["adsh","tag","end"])["value"].sort_index()
+
+        # Lookup each end_i within chunk
+        for i in (1,2,3,4):
+            e = base[f"end_{i}"]
+            keys = pd.MultiIndex.from_arrays(
+                [base["adsh"].to_numpy(), base["tag"].to_numpy(), e.to_numpy()]
+            )
+            base[f"value{i}"] = inst_idx.reindex(keys).to_numpy()
+            del keys
+            gc.collect()
+
+        base.drop(columns=["end_1","end_2","end_3","end_4"], inplace=True, errors="ignore")
+        out_chunks.append(base.loc[:, ["adsh","tag","value1","value2","value3","value4"]])
+
+        # Free chunk objects
+        del inst_c, base, inst_idx
         gc.collect()
-    
-    out = base.loc[:, ["adsh", "tag", "value1", "value2", "value3", "value4"]].copy()
 
-    # 6) Optional: special-tag fallback (only for value1) if you enabled it in config
-    # Keeps this cheap by operating on a tiny subset.
-    if getattr(config, "SPECIAL_INSTANT_TAGS", None):
-        special = out["tag"].astype(str).isin(config.SPECIAL_INSTANT_TAGS)
-        missing1 = special & out["value1"].isna() & base["end_1"].notna()
-        if missing1.any():
-            tol_days = float(getattr(config, "SPECIAL_INSTANT_TOL_DAYS", 30))
-
-            # Candidates only for special tags
-            inst_sp = inst[inst["tag"].astype(str).isin(config.SPECIAL_INSTANT_TAGS)].copy()
-            # Join by (adsh, tag) for those needing fallback (small)
-            need = base.loc[missing1, ["adsh", "tag", "end_1"]].drop_duplicates()
-            cand = need.merge(inst_sp, how="left", on=["adsh", "tag"], sort=False)
-            cand["dist_days"] = (cand["end"] - cand["end_1"]).abs().dt.total_seconds() / 86400.0
-            cand = cand[cand["dist_days"].notna() & (cand["dist_days"] <= tol_days)]
-            if not cand.empty:
-                best = (
-                    cand.sort_values(["adsh", "tag", "dist_days", "end"], kind="mergesort")
-                        .drop_duplicates(["adsh", "tag"], keep="first")
-                        .rename(columns={"value": "value1_fb"})
-                        .loc[:, ["adsh", "tag", "value1_fb"]]
-                )
-                out = out.merge(best, how="left", on=["adsh", "tag"], sort=False)
-                out["value1"] = out["value1"].fillna(out["value1_fb"])
-                out.drop(columns=["value1_fb"], inplace=True)
-
-    return out
+    return pd.concat(out_chunks, ignore_index=True) if out_chunks else pd.DataFrame(
+        columns=["adsh","tag","value1","value2","value3","value4"]
+    )
 
 
 def _enrich_sub_with_windows(sub_df: pd.DataFrame, windows_df: pd.DataFrame) -> pd.DataFrame:
