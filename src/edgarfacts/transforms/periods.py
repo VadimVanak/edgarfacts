@@ -14,6 +14,7 @@ from typing import Tuple
 
 import numpy as np
 import pandas as pd
+import gc
 
 from edgarfacts.transforms import config
 
