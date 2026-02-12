@@ -25,9 +25,13 @@ from .validation.checks import check_submissions_and_facts
 # Public trasnformation
 from .transforms.figures import build_base_figures
 
+# Pivotization 
+from .transforms.pivotize import transform_and_pivot_figures
+
 __all__ = [
     "get_logger",
     "extract_submissions_and_facts",
     "check_submissions_and_facts",
     "build_base_figures",
+    "transform_and_pivot_figures",
 ]
