@@ -230,7 +230,7 @@ def compute_period_values(
     return period_values, sub_enriched
 
 
-def compute_instant_period_values_chunked(
+def compute_instant_period_values(
     facts_df: pd.DataFrame,
     windows_df: pd.DataFrame,
     *,
