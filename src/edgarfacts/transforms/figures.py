@@ -161,20 +161,31 @@ def build_base_figures(
     facts = _remove_huge_values(facts)
     logger.info(f"Huge values removed")
 
+    facts = facts[["adsh","tag","start","end","value"]].copy()
+    facts["start"] = facts["start"].astype("datetime64[s]")
+    facts["end"]   = facts["end"].astype("datetime64[s]")
+    
+    facts_inst = facts[facts["start"] == facts["end"]]
+    facts_non  = facts[facts["start"] != facts["end"]]
+    del facts
+    gc.collect()
+    
     # 5) Infer reporting windows
-    windows = infer_reporting_windows(facts, sub_df)
+    windows = infer_reporting_windows(facts_non[["adsh","tag","start","end"]], sub_df)
     gc.collect()
-
+    
     # 6) Compute non-instant period values and enrich sub
-    period_values, sub_enriched = compute_period_values(facts, sub_df, windows)
-    logger.info("Non-instant values computed")
+    period_values, sub_enriched = compute_period_values(facts_non, sub_df, windows)
+    del facts_non
     gc.collect()
-
+    logger.info("Non-instant values computed")
+    
     # 7) Compute instant period values (start==end) using window end dates
-    inst_values = compute_instant_period_values(facts, windows)
+    inst_values = compute_instant_period_values(facts_inst, windows)
+    del facts_inst
     gc.collect()
     logger.info("Instant values computed")
-
+    
     # 8) Combine with deterministic priority: non-instant first, then instants
     # (mirrors original approach)
     combined = (
