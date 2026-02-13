@@ -20,7 +20,7 @@ from .logging_utils import get_logger
 from .extract.pipeline import extract_submissions_and_facts
 
 # Public validation / emergency-break checks
-from .validation.checks import check_submissions_and_facts
+from .validation.checks import check_submissions_and_facts, check_build_base_figures_selected_results
 
 # Public trasnformation
 from .transforms.figures import build_base_figures
@@ -32,6 +32,7 @@ __all__ = [
     "get_logger",
     "extract_submissions_and_facts",
     "check_submissions_and_facts",
+    "check_build_base_figures_selected_results",
     "build_base_figures",
     "transform_and_pivot_figures",
 ]
