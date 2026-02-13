@@ -252,32 +252,45 @@ def canonicalize_and_merge_amendments(
 
     key_cols = ["tag", "start", "end"]
 
-    for _, e in edges.iterrows():
-        source_adsh = int(e["source_adsh"])
-        target_adsh = int(e["target_adsh"])
+    # Build per-adsh stores once; avoid full-frame filtering/merges per edge.
+    # data_by_adsh: adsh -> DataFrame of rows for that adsh
+    # keyset_by_adsh: adsh -> set[(tag,start,end)] for fast membership tests
+    data_by_adsh: dict[int, pd.DataFrame] = {}
+    keyset_by_adsh: dict[int, set] = {}
+    for adsh, g in out.groupby("adsh", sort=False):
+        g2 = g.copy()
+        data_by_adsh[int(adsh)] = g2
+        keyset_by_adsh[int(adsh)] = set(zip(g2["tag"], g2["start"], g2["end"]))
 
-        src = out[out["adsh"] == source_adsh]
-        if src.empty:
+    for e in edges.itertuples(index=False):
+        source_adsh = int(e.source_adsh)
+        target_adsh = int(e.target_adsh)
+
+        src = data_by_adsh.get(source_adsh)
+        if src is None or src.empty:
             continue
 
-        tgt_keys = out.loc[out["adsh"] == target_adsh, key_cols]
-        if tgt_keys.empty:
-            to_add = src.copy()
-        else:
-            # Find rows present in source but missing in target by (tag,start,end).
-            missing = src[key_cols].merge(
-                tgt_keys.drop_duplicates(),
-                on=key_cols,
-                how="left",
-                indicator=True,
-            )
-            to_add = src.loc[missing["_merge"].to_numpy() == "left_only"].copy()
+        tgt_keys = keyset_by_adsh.get(target_adsh)
+        if tgt_keys is None:
+            tgt_keys = set()
+            keyset_by_adsh[target_adsh] = tgt_keys
 
-        if to_add.empty:
+        src_keys = list(zip(src["tag"], src["start"], src["end"]))
+        missing_mask = np.fromiter((k not in tgt_keys for k in src_keys), dtype=bool, count=len(src_keys))
+        if not missing_mask.any():
             continue
 
+        to_add = src.loc[missing_mask].copy()
         to_add["adsh"] = np.int64(target_adsh)
-        out = pd.concat([out, to_add], ignore_index=True)
+
+        # Update target stores so later chain edges see inherited rows.
+        if target_adsh in data_by_adsh:
+            data_by_adsh[target_adsh] = pd.concat([data_by_adsh[target_adsh], to_add], ignore_index=True)
+        else:
+            data_by_adsh[target_adsh] = to_add
+        tgt_keys.update(k for i, k in enumerate(src_keys) if missing_mask[i])
+
+    out = pd.concat(data_by_adsh.values(), ignore_index=True)
 
     # Remove exact duplicates only; do not collapse differing values.
     out = out.drop_duplicates(subset=["adsh", "tag", "start", "end", "value"], keep="first").copy()
