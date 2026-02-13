@@ -148,6 +148,8 @@ def build_base_figures(
 
     # 1) Amendments: canonicalize + dedupe to allow amended override
     facts = canonicalize_and_merge_amendments(facts, sub_df)
+    gc.collect()
+    logger.info("Amendments processed")
 
     # 2) Remove contradictory duplicates
     facts = _remove_contradicting_values(facts)
