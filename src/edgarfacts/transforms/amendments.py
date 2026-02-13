@@ -232,8 +232,8 @@ def canonicalize_and_merge_amendments(
     if not req_s.issubset(sub_df.columns):
         raise ValueError(f"sub_df must contain columns {sorted(req_s)}")
 
-    out = facts_df.copy()
-    out["adsh"] = pd.to_numeric(out["adsh"], errors="raise").astype("int64")
+    base = facts_df.copy()
+    base["adsh"] = pd.to_numeric(base["adsh"], errors="raise").astype("int64")
 
     edges = sub_df[["adsh", "amendment_adsh", "accepted"]].drop_duplicates().copy()
     edges["adsh"] = pd.to_numeric(edges["adsh"], errors="raise").astype("int64")
@@ -245,22 +245,27 @@ def canonicalize_and_merge_amendments(
         columns={"adsh": "source_adsh", "amendment_adsh": "target_adsh"}
     )
     if edges.empty:
-        return out
+        return base
 
     # Deterministic processing; allows chain propagation (A->B->C).
     edges = edges.sort_values(["accepted", "target_adsh", "source_adsh"], kind="mergesort")
 
     key_cols = ["tag", "start", "end"]
 
-    # Build per-adsh stores once; avoid full-frame filtering/merges per edge.
-    # data_by_adsh: adsh -> DataFrame of rows for that adsh
-    # keyset_by_adsh: adsh -> set[(tag,start,end)] for fast membership tests
-    data_by_adsh: dict[int, pd.DataFrame] = {}
-    keyset_by_adsh: dict[int, set] = {}
-    for adsh, g in out.groupby("adsh", sort=False):
-        g2 = g.copy()
-        data_by_adsh[int(adsh)] = g2
-        keyset_by_adsh[int(adsh)] = set(zip(g2["tag"], g2["start"], g2["end"]))
+    # Work only on involved submissions (small amended subset).
+    target_adshs = edges["target_adsh"].drop_duplicates().astype("int64")
+    source_adshs = edges["source_adsh"].drop_duplicates().astype("int64")
+    involved_adshs = pd.Index(source_adshs).union(pd.Index(target_adshs))
+
+    involved = base[base["adsh"].isin(involved_adshs)].copy()
+    non_amended = base[~base["adsh"].isin(target_adshs)].copy()
+
+    data_by_adsh: dict[int, pd.DataFrame] = {
+        int(adsh): g.copy() for adsh, g in involved.groupby("adsh", sort=False)
+    }
+    keyset_by_adsh: dict[int, set] = {
+        int(adsh): set(zip(g["tag"], g["start"], g["end"])) for adsh, g in involved.groupby("adsh", sort=False)
+    }
 
     for e in edges.itertuples(index=False):
         source_adsh = int(e.source_adsh)
@@ -283,14 +288,18 @@ def canonicalize_and_merge_amendments(
         to_add = src.loc[missing_mask].copy()
         to_add["adsh"] = np.int64(target_adsh)
 
-        # Update target stores so later chain edges see inherited rows.
-        if target_adsh in data_by_adsh:
-            data_by_adsh[target_adsh] = pd.concat([data_by_adsh[target_adsh], to_add], ignore_index=True)
-        else:
+        existing_target = data_by_adsh.get(target_adsh)
+        if existing_target is None or existing_target.empty:
             data_by_adsh[target_adsh] = to_add
+        else:
+            data_by_adsh[target_adsh] = pd.concat([existing_target, to_add], ignore_index=True)
+
         tgt_keys.update(k for i, k in enumerate(src_keys) if missing_mask[i])
 
-    out = pd.concat(data_by_adsh.values(), ignore_index=True)
+    amended_out_frames = [data_by_adsh.get(int(adsh), base.iloc[0:0].copy()) for adsh in target_adshs.tolist()]
+    amended_out = pd.concat(amended_out_frames, ignore_index=True) if amended_out_frames else base.iloc[0:0].copy()
+
+    out = pd.concat([non_amended, amended_out], ignore_index=True)
 
     # Remove exact duplicates only; do not collapse differing values.
     out = out.drop_duplicates(subset=["adsh", "tag", "start", "end", "value"], keep="first").copy()
