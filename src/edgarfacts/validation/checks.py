@@ -430,12 +430,12 @@ def check_build_base_figures_selected_results(df: pd.DataFrame, sub: pd.DataFram
             "ticker": ["msft", "msft", "msft", "msft"],
             "start_rep": pd.to_datetime(["2023-07-01", "2023-07-01", "2023-07-01", "2023-07-01"]),
             "end_rep": pd.to_datetime(["2024-06-30", "2024-03-31", "2023-12-31", "2023-09-30"]),
-            "start_q": pd.to_datetime(["2024-04-01", "2024-01-01", "2023-10-01", None]),
-            "end_q": pd.to_datetime(["2024-06-30", "2024-03-31", "2023-12-31", None]),
+            "start_q": pd.to_datetime([None, "2024-01-01", "2023-10-01", None]),
+            "end_q": pd.to_datetime([None, "2024-03-31", "2023-12-31", None]),
             "start_rep_py": pd.to_datetime(["2022-07-01", "2022-07-01", "2022-07-01", "2022-07-01"]),
             "end_rep_py": pd.to_datetime(["2023-06-30", "2023-03-31", "2022-12-31", "2022-09-30"]),
-            "start_q_py": pd.to_datetime(["2023-04-01", "2023-01-01", "2022-10-01", None]),
-            "end_q_py": pd.to_datetime(["2023-06-30", "2023-03-31", "2022-12-31", None]),
+            "start_q_py": pd.to_datetime([None, "2023-01-01", "2022-10-01", None]),
+            "end_q_py": pd.to_datetime([None, "2023-03-31", "2022-12-31", None]),
         }
     )
 
