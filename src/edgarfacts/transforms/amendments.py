@@ -232,11 +232,18 @@ def canonicalize_and_merge_amendments(
     if not req_s.issubset(sub_df.columns):
         raise ValueError(f"sub_df must contain columns {sorted(req_s)}")
 
+<<<<<<< codex/write-unit-tests-for-taxonomy-transforms-b0o2og
     # Single defensive copy at function boundary (keep caller input immutable).
     base = facts_df.copy()
     base["adsh"] = pd.to_numeric(base["adsh"], errors="raise").astype("int64")
 
     edges = sub_df[["adsh", "amendment_adsh", "accepted"]].drop_duplicates()
+=======
+    base = facts_df.copy()
+    base["adsh"] = pd.to_numeric(base["adsh"], errors="raise").astype("int64")
+
+    edges = sub_df[["adsh", "amendment_adsh", "accepted"]].drop_duplicates().copy()
+>>>>>>> main
     edges["adsh"] = pd.to_numeric(edges["adsh"], errors="raise").astype("int64")
     edges["amendment_adsh"] = pd.to_numeric(edges["amendment_adsh"], errors="coerce").fillna(0).astype("int64")
     edges["accepted"] = pd.to_datetime(edges["accepted"], errors="coerce")
@@ -258,6 +265,7 @@ def canonicalize_and_merge_amendments(
     source_adshs = edges["source_adsh"].drop_duplicates().astype("int64")
     involved_adshs = pd.Index(source_adshs).union(pd.Index(target_adshs))
 
+<<<<<<< codex/write-unit-tests-for-taxonomy-transforms-b0o2og
     involved = base[base["adsh"].isin(involved_adshs)]
     non_amended = base[~base["adsh"].isin(target_adshs)]
 
@@ -267,6 +275,17 @@ def canonicalize_and_merge_amendments(
         adsh_i = int(adsh)
         data_by_adsh[adsh_i] = g
         keyset_by_adsh[adsh_i] = set(zip(g["tag"], g["start"], g["end"]))
+=======
+    involved = base[base["adsh"].isin(involved_adshs)].copy()
+    non_amended = base[~base["adsh"].isin(target_adshs)].copy()
+
+    data_by_adsh: dict[int, pd.DataFrame] = {
+        int(adsh): g.copy() for adsh, g in involved.groupby("adsh", sort=False)
+    }
+    keyset_by_adsh: dict[int, set] = {
+        int(adsh): set(zip(g["tag"], g["start"], g["end"])) for adsh, g in involved.groupby("adsh", sort=False)
+    }
+>>>>>>> main
 
     for e in edges.itertuples(index=False):
         source_adsh = int(e.source_adsh)
@@ -297,13 +316,22 @@ def canonicalize_and_merge_amendments(
 
         tgt_keys.update(k for i, k in enumerate(src_keys) if missing_mask[i])
 
+<<<<<<< codex/write-unit-tests-for-taxonomy-transforms-b0o2og
     empty = base.iloc[0:0]
     amended_out_frames = [data_by_adsh.get(int(adsh), empty) for adsh in target_adshs.tolist()]
     amended_out = pd.concat(amended_out_frames, ignore_index=True) if amended_out_frames else empty
+=======
+    amended_out_frames = [data_by_adsh.get(int(adsh), base.iloc[0:0].copy()) for adsh in target_adshs.tolist()]
+    amended_out = pd.concat(amended_out_frames, ignore_index=True) if amended_out_frames else base.iloc[0:0].copy()
+>>>>>>> main
 
     out = pd.concat([non_amended, amended_out], ignore_index=True)
 
     # Remove exact duplicates only; do not collapse differing values.
+<<<<<<< codex/write-unit-tests-for-taxonomy-transforms-b0o2og
     out = out.drop_duplicates(subset=["adsh", "tag", "start", "end", "value"], keep="first")
+=======
+    out = out.drop_duplicates(subset=["adsh", "tag", "start", "end", "value"], keep="first").copy()
+>>>>>>> main
     out["adsh"] = pd.to_numeric(out["adsh"], errors="raise").astype("int64")
     return out
