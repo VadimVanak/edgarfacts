@@ -203,12 +203,105 @@ def canonicalize_and_merge_amendments(
     sub_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Convenience wrapper: canonicalize ADSH + dedupe so amendments override originals.
+    Merge amended submissions with their originals without destroying originals.
+
+    Behavior
+    --------
+    For each amendment edge ``source_adsh -> amended_adsh`` (where
+    ``sub_df.amendment_adsh != 0``), copy only missing fact keys from source to
+    amended submission:
+
+    - key = (tag, start, end)
+    - if amended already has the key, amended value is kept
+    - if amended does not have the key, source row is copied with ``adsh`` set
+      to amended adsh
+
+    Original submission rows are preserved unchanged.
+
+    Chains are handled iteratively in target-acceptance order, so inherited
+    missing values can flow through multiple amendment generations.
 
     Returns
     -------
     facts_df_out: same schema as facts_df
     """
-    mapping = build_canonical_adsh_map(sub_df)
-    facts_canon = apply_canonical_adsh(facts_df, mapping)
-    return dedupe_latest_by_acceptance(facts_canon, sub_df)
+    req_f = {"adsh", "tag", "start", "end", "value"}
+    req_s = {"adsh", "amendment_adsh", "accepted"}
+    if not req_f.issubset(facts_df.columns):
+        raise ValueError(f"facts_df must contain columns {sorted(req_f)}")
+    if not req_s.issubset(sub_df.columns):
+        raise ValueError(f"sub_df must contain columns {sorted(req_s)}")
+
+    base = facts_df.copy()
+    base["adsh"] = pd.to_numeric(base["adsh"], errors="raise").astype("int64")
+
+    edges = sub_df[["adsh", "amendment_adsh", "accepted"]].drop_duplicates().copy()
+    edges["adsh"] = pd.to_numeric(edges["adsh"], errors="raise").astype("int64")
+    edges["amendment_adsh"] = pd.to_numeric(edges["amendment_adsh"], errors="coerce").fillna(0).astype("int64")
+    edges["accepted"] = pd.to_datetime(edges["accepted"], errors="coerce")
+
+    # Keep only actual amendment links: original/submitted report -> amended report
+    edges = edges[edges["amendment_adsh"] != 0].rename(
+        columns={"adsh": "source_adsh", "amendment_adsh": "target_adsh"}
+    )
+    if edges.empty:
+        return base
+
+    # Deterministic processing; allows chain propagation (A->B->C).
+    edges = edges.sort_values(["accepted", "target_adsh", "source_adsh"], kind="mergesort")
+
+    key_cols = ["tag", "start", "end"]
+
+    # Work only on involved submissions (small amended subset).
+    target_adshs = edges["target_adsh"].drop_duplicates().astype("int64")
+    source_adshs = edges["source_adsh"].drop_duplicates().astype("int64")
+    involved_adshs = pd.Index(source_adshs).union(pd.Index(target_adshs))
+
+    involved = base[base["adsh"].isin(involved_adshs)].copy()
+    non_amended = base[~base["adsh"].isin(target_adshs)].copy()
+
+    data_by_adsh: dict[int, pd.DataFrame] = {
+        int(adsh): g.copy() for adsh, g in involved.groupby("adsh", sort=False)
+    }
+    keyset_by_adsh: dict[int, set] = {
+        int(adsh): set(zip(g["tag"], g["start"], g["end"])) for adsh, g in involved.groupby("adsh", sort=False)
+    }
+
+    for e in edges.itertuples(index=False):
+        source_adsh = int(e.source_adsh)
+        target_adsh = int(e.target_adsh)
+
+        src = data_by_adsh.get(source_adsh)
+        if src is None or src.empty:
+            continue
+
+        tgt_keys = keyset_by_adsh.get(target_adsh)
+        if tgt_keys is None:
+            tgt_keys = set()
+            keyset_by_adsh[target_adsh] = tgt_keys
+
+        src_keys = list(zip(src["tag"], src["start"], src["end"]))
+        missing_mask = np.fromiter((k not in tgt_keys for k in src_keys), dtype=bool, count=len(src_keys))
+        if not missing_mask.any():
+            continue
+
+        to_add = src.loc[missing_mask].copy()
+        to_add["adsh"] = np.int64(target_adsh)
+
+        existing_target = data_by_adsh.get(target_adsh)
+        if existing_target is None or existing_target.empty:
+            data_by_adsh[target_adsh] = to_add
+        else:
+            data_by_adsh[target_adsh] = pd.concat([existing_target, to_add], ignore_index=True)
+
+        tgt_keys.update(k for i, k in enumerate(src_keys) if missing_mask[i])
+
+    amended_out_frames = [data_by_adsh.get(int(adsh), base.iloc[0:0].copy()) for adsh in target_adshs.tolist()]
+    amended_out = pd.concat(amended_out_frames, ignore_index=True) if amended_out_frames else base.iloc[0:0].copy()
+
+    out = pd.concat([non_amended, amended_out], ignore_index=True)
+
+    # Remove exact duplicates only; do not collapse differing values.
+    out = out.drop_duplicates(subset=["adsh", "tag", "start", "end", "value"], keep="first").copy()
+    out["adsh"] = pd.to_numeric(out["adsh"], errors="raise").astype("int64")
+    return out
