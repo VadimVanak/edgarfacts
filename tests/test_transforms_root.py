@@ -105,9 +105,43 @@ class AmendmentsTests(unittest.TestCase):
         )
 
         out = canonicalize_and_merge_amendments(facts, sub)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out.iloc[0]["adsh"], 2)
-        self.assertEqual(out.iloc[0]["value"], 10.0)
+        # Original remains; amended keeps own value and does not get overwritten.
+        self.assertEqual(len(out), 2)
+        v1 = out.loc[out["adsh"] == 1, "value"].iloc[0]
+        v2 = out.loc[out["adsh"] == 2, "value"].iloc[0]
+        self.assertEqual(v1, 10.0)
+        self.assertEqual(v2, 20.0)
+
+    def test_canonicalize_and_merge_amendments_copies_only_missing_keys_to_amended(self):
+        facts = pd.DataFrame(
+            {
+                "adsh": [894717000137, 894717000137, 894718000047],
+                "tag": ["Revenue", "CostOfRevenue", "Revenue"],
+                "start": pd.to_datetime(["2017-03-01", "2017-03-01", "2017-03-01"]),
+                "end": pd.to_datetime(["2017-08-31", "2017-08-31", "2017-08-31"]),
+                "value": [100.0, 60.0, 120.0],
+            }
+        )
+        # Matches the user-described direction: original adsh points to amendment adsh.
+        sub = pd.DataFrame(
+            {
+                "adsh": [894718000047, 894717000137],
+                "amendment_adsh": [0, 894718000047],
+                "accepted": pd.to_datetime(["2018-04-19 06:24:00", "2017-10-03 06:32:00"]),
+            }
+        )
+
+        out = canonicalize_and_merge_amendments(facts, sub)
+
+        # Original adsh keeps all its rows
+        orig = out[out["adsh"] == 894717000137]
+        self.assertSetEqual(set(orig["tag"].tolist()), {"Revenue", "CostOfRevenue"})
+
+        # Amended keeps its own Revenue value and receives missing CostOfRevenue only.
+        amended = out[out["adsh"] == 894718000047]
+        self.assertSetEqual(set(amended["tag"].tolist()), {"Revenue", "CostOfRevenue"})
+        self.assertEqual(amended.loc[amended["tag"] == "Revenue", "value"].iloc[0], 120.0)
+        self.assertEqual(amended.loc[amended["tag"] == "CostOfRevenue", "value"].iloc[0], 60.0)
 
 
 class OutliersTests(unittest.TestCase):
