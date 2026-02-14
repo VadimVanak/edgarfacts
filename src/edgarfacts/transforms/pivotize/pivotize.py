@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import gc
 
 
 def build_prev_10k_mapping(
@@ -619,6 +620,9 @@ def transform_and_pivot_figures(
     submissions = submissions.drop_duplicates(subset="adsh")
     # ---- 1) figures transforms ----
     df = remove_infrequent_figures(figures)
+    # Free memory
+    del figures
+    gc.collect()
     df = fill_missing_quarterly_figures(df, submissions, keep_existing=True, debug=False)
     df = fill_missing_py_from_shifted_reports(
         df, submissions, tol_days=tol_days, match_form_family=match_form_family, debug=False
@@ -751,6 +755,9 @@ def transform_and_pivot_figures(
     df.set_index(["adsh", "tag"], inplace=True)
     df.drop(columns = np.setdiff1d(df.columns, value_cols + ["adsh", "tag"]), inplace=True)
     wide = df.unstack("tag")
+    # Free memory
+    del df
+    gc.collect()
 
     # ---- 4) flatten columns: "{tag}{suffix}" ----
     suffix = {
