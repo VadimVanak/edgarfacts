@@ -592,3 +592,21 @@ def check_submissions_and_facts(logger, df: pd.DataFrame, sub: pd.DataFrame) -> 
     """
     check_subs(logger, sub)
     check_figures(logger, df, sub)
+
+
+def check_pivot_figures(df: pd.DataFrame) -> None:
+    check_list = [
+        {"adsh": 119312526027207, "tag": "Revenues_a", "value": 305453000000.0},
+        {
+            "adsh": 119312526027207,
+            "tag": "CostOfGoodsAndServicesSold_a",
+            "value": 95954000000.0,
+        },
+        {"adsh": 119312526027207, "tag": "GrossProfit_a", "value": 209499000000.0},
+    ]
+
+    for check in check_list:
+        assert (
+            df.loc[df.index == check["adsh"], check["tag"]].values[0] == check["value"]
+        )
+
