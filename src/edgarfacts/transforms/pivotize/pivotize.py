@@ -556,6 +556,21 @@ def add_annual_figure_py_from_shifted_reports(
     return out
 
 
+def remove_infrequent_figures(df):
+    stat = (
+        df.reset_index()[["tag", "reported_figure"]]
+        .groupby("tag", observed=True, as_index=False)
+        .size()
+        .sort_values(by="size", ascending=False)
+    )
+    stat["rank"] = range(len(stat))
+    informative_tags = stat[stat["size"] > stat["rank"]]["tag"].values
+
+    df.reset_index(inplace=True)
+    df = df[df['tag'].isin(informative_tags)&~df['reported_figure'].isna()].copy()
+    return df
+    
+
 def transform_and_pivot_figures(
     figures: pd.DataFrame,
     submissions: pd.DataFrame,
@@ -601,8 +616,9 @@ def transform_and_pivot_figures(
           annual_figure_py     -> _a_py
       - Merge pivoted figures with modified submissions on adsh.
     """
+    submissions = submissions.drop_duplicates(subset="adsh")
     # ---- 1) figures transforms ----
-    df = figures
+    df = remove_infrequent_figures(figures)
     df = fill_missing_quarterly_figures(df, submissions, keep_existing=True, debug=False)
     df = fill_missing_py_from_shifted_reports(
         df, submissions, tol_days=tol_days, match_form_family=match_form_family, debug=False
@@ -732,7 +748,9 @@ def transform_and_pivot_figures(
         raise ValueError(f"transformed figures missing columns: {sorted(missing)}")
 
     value_cols = ["quarterly_figure", "quarterly_figure_py", "annual_figure", "annual_figure_py"]
-    wide = df.set_index(["adsh", "tag"])[value_cols].unstack("tag")
+    df.set_index(["adsh", "tag"], inplace=True)
+    df.drop(columns = np.setdiff1d(df.columns, value_cols + ["adsh", "tag"]), inplace=True)
+    wide = df.unstack("tag")
 
     # ---- 4) flatten columns: "{tag}{suffix}" ----
     suffix = {
@@ -742,8 +760,13 @@ def transform_and_pivot_figures(
         "annual_figure_py": "_a_py",
     }
     wide.columns = [f"{tag}{suffix[val]}" for (val, tag) in wide.columns]
-    wide = wide.reset_index()
-
+    wide.reset_index(inplace=True)
+  
     # ---- 5) merge ----
-    out = sub.merge(wide, on="adsh", how="left", validate="one_to_one")
-    return out
+    sub_aligned = (
+        sub[sub['adsh'].isin(wide["adsh"])]
+        .set_index("adsh")
+        .reindex(wide.index)
+    ).copy()
+    wide[sub_aligned.columns]=sub_aligned.to_numpy()
+    return wide
