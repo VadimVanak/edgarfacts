@@ -767,11 +767,10 @@ def transform_and_pivot_figures(
         "annual_figure_py": "_a_py",
     }
     wide.columns = [f"{tag}{suffix[val]}" for (val, tag) in wide.columns]
-    wide.reset_index(inplace=True)
   
     # ---- 5) merge ----
     sub_aligned = (
-        sub[sub['adsh'].isin(wide["adsh"])]
+        sub[sub['adsh'].isin(wide.index)]
         .set_index("adsh")
         .reindex(wide.index)
     ).copy()
