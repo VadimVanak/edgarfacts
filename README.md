@@ -135,6 +135,14 @@ Transforms are intentionally kept **independent** from extraction and validation
 
 ---
 
+
+## Documentation
+
+- External API reference: `docu/public-api.md`
+- Internal maintenance guide: `docu/internal-maintenance.md`
+
+---
+
 ## License
 
 MIT License.
