@@ -10,7 +10,7 @@ into a wide table:
     figures_df: ['adsh','tag',
                  'reported_figure','quarterly_figure',
                  'reported_figure_py','quarterly_figure_py',
-                 'is_computed']
+                 'is_computed','is_instant']
 
 and enriches submissions with inferred reporting windows:
 
@@ -27,6 +27,7 @@ Pipeline (high level)
    - non-instant values -> value1..value4
    - instant values     -> value1..value4 at window end dates
 6) Combine period + instant with deterministic priority
+7) Stamp each output row with is_instant (bool)
 """
 
 from __future__ import annotations
@@ -131,7 +132,9 @@ def build_base_figures(
     Returns
     -------
     figures_df:
-        ['adsh','tag','reported_figure','quarterly_figure','reported_figure_py','quarterly_figure_py','is_computed']
+        ['adsh','tag','reported_figure','quarterly_figure',
+         'reported_figure_py','quarterly_figure_py',
+         'is_computed','is_instant']
     sub_enriched_df:
         sub_df + reporting window columns (start/end for 4 enums)
     """
@@ -161,35 +164,38 @@ def build_base_figures(
 
     # 4) Remove huge values
     facts = _remove_huge_values(facts)
-    logger.info(f"Huge values removed")
+    logger.info("Huge values removed")
 
-    facts = facts[["adsh","tag","start","end","value"]].copy()
+    facts = facts[["adsh", "tag", "start", "end", "value"]].copy()
     facts["start"] = facts["start"].astype("datetime64[s]")
-    facts["end"]   = facts["end"].astype("datetime64[s]")
-    
+    facts["end"] = facts["end"].astype("datetime64[s]")
+
     facts_inst = facts[facts["start"] == facts["end"]]
-    facts_non  = facts[facts["start"] != facts["end"]]
+    facts_non = facts[facts["start"] != facts["end"]]
     del facts
     gc.collect()
-    
+
     # 5) Infer reporting windows
-    windows = infer_reporting_windows(facts_non[["adsh","tag","start","end"]], sub_df)
+    windows = infer_reporting_windows(facts_non[["adsh", "tag", "start", "end"]], sub_df)
     gc.collect()
-    
+
     # 6) Compute non-instant period values and enrich sub
     period_values, sub_enriched = compute_period_values(facts_non, sub_df, windows)
+    period_values = period_values.copy()
+    period_values["is_instant"] = False
     del facts_non
     gc.collect()
     logger.info("Non-instant values computed")
-    
+
     # 7) Compute instant period values (start==end) using window end dates
     inst_values = compute_instant_period_values(facts_inst, windows)
+    inst_values = inst_values.copy()
+    inst_values["is_instant"] = True
     del facts_inst
     gc.collect()
     logger.info("Instant values computed")
-    
+
     # 8) Combine with deterministic priority: non-instant first, then instants
-    # (mirrors original approach)
     combined = (
         pd.concat([period_values.assign(_prio=1), inst_values.assign(_prio=2)], ignore_index=True)
         .sort_values(["adsh", "tag", "_prio"], kind="mergesort")
@@ -197,7 +203,7 @@ def build_base_figures(
         .drop(columns="_prio")
     )
 
-    # 9) Rename to final wide schema + is_computed flag
+    # 9) Rename to final wide schema + flags
     figures = combined.rename(
         columns={
             "value1": "reported_figure",
@@ -215,6 +221,12 @@ def build_base_figures(
     figures["quarterly_figure"] = pd.to_numeric(figures["quarterly_figure"], errors="coerce").astype("float64")
     figures["reported_figure_py"] = pd.to_numeric(figures["reported_figure_py"], errors="coerce").astype("float64")
     figures["quarterly_figure_py"] = pd.to_numeric(figures["quarterly_figure_py"], errors="coerce").astype("float64")
+    figures["is_computed"] = figures["is_computed"].astype(bool)
+    figures["is_instant"] = figures["is_instant"].astype(bool)
+
+    # Optional: restore tag categorical dtype if input was categorical and output lost it
+    if tag_categories is not None and not pd.api.types.is_categorical_dtype(figures["tag"]):
+        figures["tag"] = pd.Categorical(figures["tag"], categories=tag_categories)
 
     # Ensure window datetimes in sub_enriched are seconds
     for c in [
@@ -242,5 +254,11 @@ def build_base_figures(
             arcs_df=arcs,
             logger=logger,
         )
-    
+
+        # Re-enforce flag dtypes after arcs
+        if "is_computed" in figures.columns:
+            figures["is_computed"] = figures["is_computed"].astype(bool)
+        if "is_instant" in figures.columns:
+            figures["is_instant"] = figures["is_instant"].astype(bool)
+
     return figures, sub_enriched
