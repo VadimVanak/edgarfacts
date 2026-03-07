@@ -242,6 +242,9 @@ def build_base_figures(
         if c in sub_enriched.columns:
             sub_enriched[c] = pd.to_datetime(sub_enriched[c]).astype(config.DATETIME_DTYPE)
 
+    if "is_instant" in sub_enriched.columns:
+        sub_enriched["is_instant"] = sub_enriched["is_instant"].astype(bool)
+
     # 10) Apply calculation arcs at the end (fills missing tags, marks is_computed=True)
     if apply_arcs:
         logger.info("Loading US-GAAP calculation arcs")
