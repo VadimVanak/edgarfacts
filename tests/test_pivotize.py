@@ -67,6 +67,7 @@ class PivotizeTests(unittest.TestCase):
             {
                 "adsh": [100, 101],
                 "tag": ["Revenue", "Revenue"],
+                "is_instant": [False, False],
                 "reported_figure": [30.0, 70.0],
                 "quarterly_figure": [30.0, np.nan],
                 "reported_figure_py": [20.0, 40.0],
@@ -89,11 +90,39 @@ class PivotizeTests(unittest.TestCase):
         self.assertEqual(out.loc[out["adsh"] == 101, "quarterly_figure"].iloc[0], 40.0)
         self.assertEqual(out.loc[out["adsh"] == 101, "quarterly_figure_py"].iloc[0], 20.0)
 
+    def test_fill_missing_quarterly_figures_keeps_instants_unchanged(self):
+        figures = pd.DataFrame(
+            {
+                "adsh": [100, 101],
+                "tag": ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalentsAtCarryingValue"],
+                "is_instant": [True, True],
+                "reported_figure": [300.0, 350.0],
+                "quarterly_figure": [np.nan, np.nan],
+                "reported_figure_py": [250.0, 300.0],
+                "quarterly_figure_py": [np.nan, np.nan],
+            }
+        )
+        sub = pd.DataFrame(
+            {
+                "adsh": [100, 101],
+                "cik": [5, 5],
+                "form": ["10-Q", "10-Q"],
+                "start_rep": pd.to_datetime(["2024-01-01", "2024-01-01"]),
+                "end_rep": pd.to_datetime(["2024-03-31", "2024-06-30"]),
+                "is_amended": [False, False],
+            }
+        )
+
+        out = fill_missing_quarterly_figures(figures, sub, keep_existing=True)
+        self.assertTrue(pd.isna(out.loc[out["adsh"] == 101, "quarterly_figure"]).iloc[0])
+        self.assertTrue(pd.isna(out.loc[out["adsh"] == 101, "quarterly_figure_py"]).iloc[0])
+
     def test_fill_missing_py_from_shifted_reports(self):
         figures = pd.DataFrame(
             {
                 "adsh": [11, 20],
                 "tag": ["Revenue", "Revenue"],
+                "is_instant": [False, False],
                 "reported_figure": [30.0, 40.0],
                 "quarterly_figure": [30.0, 40.0],
                 "reported_figure_py": [np.nan, np.nan],
@@ -119,6 +148,7 @@ class PivotizeTests(unittest.TestCase):
             {
                 "adsh": [10, 20, 30],
                 "tag": ["Revenue", "Revenue", "Revenue"],
+                "is_instant": [False, False, False],
                 "reported_figure": [100.0, 40.0, 50.0],
                 "quarterly_figure": [100.0, 40.0, 50.0],
                 "reported_figure_py": [80.0, 20.0, 30.0],
@@ -142,11 +172,36 @@ class PivotizeTests(unittest.TestCase):
         with_py = add_annual_figure_py_from_shifted_reports(with_annual, sub)
         self.assertEqual(with_py.loc[with_py["adsh"] == 30, "annual_figure_py"].iloc[0], 120.0)
 
+    def test_compute_annual_leaves_non_10k_instants_empty(self):
+        figures = pd.DataFrame(
+            {
+                "adsh": [10, 20],
+                "tag": ["Assets", "Assets"],
+                "is_instant": [True, True],
+                "reported_figure": [100.0, 90.0],
+                "reported_figure_py": [80.0, 70.0],
+            }
+        )
+        sub = pd.DataFrame(
+            {
+                "adsh": [10, 20],
+                "cik": [9, 9],
+                "form": ["10-K", "10-Q"],
+                "end_rep": pd.to_datetime(["2023-12-31", "2024-03-31"]),
+                "is_amended": [False, False],
+            }
+        )
+
+        out = compute_annual_figures_current_year(figures, sub)
+        self.assertEqual(out.loc[out["adsh"] == 10, "annual_figure"].iloc[0], 100.0)
+        self.assertTrue(pd.isna(out.loc[out["adsh"] == 20, "annual_figure"]).iloc[0])
+
     def test_transform_and_pivot_figures_end_to_end(self):
         figures = pd.DataFrame(
             {
                 "adsh": [100, 101, 200],
                 "tag": ["Revenue", "Revenue", "Revenue"],
+                "is_instant": [False, False, False],
                 "reported_figure": [30.0, 70.0, 40.0],
                 "quarterly_figure": [30.0, np.nan, np.nan],
                 "reported_figure_py": [20.0, np.nan, np.nan],
