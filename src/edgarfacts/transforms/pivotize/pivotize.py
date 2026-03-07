@@ -224,20 +224,27 @@ def fill_missing_quarterly_figures(
     """
     Fill missing quarterly_figure and quarterly_figure_py.
 
-    Previous report is defined ONLY by submissions (same cik + same start_rep; choose latest earlier end_rep).
+    Duration rows (is_instant == False):
+      CURRENT YEAR:
+        - if prev_adsh == 0 OR prev_form is 10-K => quarterly = reported_figure
+        - else => quarterly = reported_figure(current) - reported_figure(prev)
 
-    CURRENT YEAR:
-      - if prev_adsh == 0 OR prev_form is 10-K => quarterly = reported_figure
-      - else => quarterly = reported_figure(current) - reported_figure(prev)
+      PREVIOUS YEAR:
+        - uses THE SAME prev_adsh mapping (same fiscal-year sequencing)
+        - if prev_adsh == 0 OR prev_form is 10-K => quarterly_py = reported_figure_py
+        - else => quarterly_py = reported_figure_py(current) - reported_figure_py(prev)
 
-    PREVIOUS YEAR:
-      - uses THE SAME prev_adsh mapping (same fiscal-year sequencing)
-      - if prev_adsh == 0 OR prev_form is 10-K => quarterly_py = reported_figure_py
-      - else => quarterly_py = reported_figure_py(current) - reported_figure_py(prev)
+    Instant rows (is_instant == True):
+      - no arithmetic reconstruction is performed
+      - quarterly_figure / quarterly_figure_py are left unchanged in this function
 
-    (This avoids the incorrect “previous-of-previous” effect.)
+    Existing non-NaN quarterly values are preserved if keep_existing=True.
     """
-    req_fig = {"adsh", "tag", "reported_figure", "quarterly_figure", "reported_figure_py", "quarterly_figure_py"}
+    req_fig = {
+        "adsh", "tag", "is_instant",
+        "reported_figure", "quarterly_figure",
+        "reported_figure_py", "quarterly_figure_py",
+    }
     missing = req_fig - set(figures.columns)
     if missing:
         raise ValueError(f"figures missing columns: {sorted(missing)}")
@@ -248,16 +255,15 @@ def fill_missing_quarterly_figures(
         raise ValueError(f"submissions missing columns: {sorted(missing)}")
 
     figs = figures.copy()
+    figs["is_instant"] = figs["is_instant"].astype(bool)
     for c in ["reported_figure", "quarterly_figure", "reported_figure_py", "quarterly_figure_py"]:
         figs[c] = pd.to_numeric(figs[c], errors="coerce").astype("float64")
 
-    # stable row identity for alignment
     figs["__rowid"] = figs.index.to_numpy()
 
-    # attach minimal submissions columns needed for mapping join
     sub_cols = ["adsh", "cik", "start_rep", "end_rep"]
     fmeta = figs[[
-        "__rowid", "adsh", "tag",
+        "__rowid", "adsh", "tag", "is_instant",
         "reported_figure", "quarterly_figure",
         "reported_figure_py", "quarterly_figure_py",
     ]].merge(
@@ -271,7 +277,6 @@ def fill_missing_quarterly_figures(
         bad = fmeta.loc[fmeta["cik"].isna(), "adsh"].drop_duplicates().head(10).tolist()
         raise ValueError(f"Some Figures.adsh missing in Submissions. Example adsh: {bad}")
 
-    # single prev mapping
     prev_map = build_prev_adsh_mapping(
         submissions,
         left_start_col="start_rep",
@@ -286,43 +291,48 @@ def fill_missing_quarterly_figures(
     fmeta["prev_adsh"] = pd.to_numeric(fmeta["prev_adsh"], errors="coerce").fillna(0).astype("int64")
     fmeta["prev_form"] = fmeta["prev_form"].fillna("").astype("string")
 
-    # index by rowid (alignment guarantee)
     fmeta = fmeta.set_index("__rowid", drop=True)
     figs = figs.set_index("__rowid", drop=True)
 
-    # lookup prev reported values by (prev_adsh, tag)
     idx = pd.MultiIndex.from_frame(figs[["adsh", "tag"]])
-
     ytd_cur = pd.Series(figs["reported_figure"].to_numpy(), index=idx, dtype="float64")
     ytd_py = pd.Series(figs["reported_figure_py"].to_numpy(), index=idx, dtype="float64")
 
     prev_idx = pd.MultiIndex.from_arrays([fmeta["prev_adsh"].to_numpy(), fmeta["tag"].to_numpy()])
-
     fmeta["prev_reported_figure"] = ytd_cur.reindex(prev_idx).to_numpy(dtype="float64", na_value=np.nan)
-    # IMPORTANT: prev_reported_figure_py is the previous report’s reported_figure_py (same prev_adsh)
     fmeta["prev_reported_figure_py"] = ytd_py.reindex(prev_idx).to_numpy(dtype="float64", na_value=np.nan)
 
-    # compute quarterlies
-    is_first = (fmeta["prev_adsh"] == 0) | fmeta["prev_form"].str.startswith("10-K")
+    is_duration = ~fmeta["is_instant"].astype(bool)
+
+    # Duration-only arithmetic reconstruction
+    is_first = ((fmeta["prev_adsh"] == 0) | fmeta["prev_form"].str.startswith("10-K")) & is_duration
 
     q_calc = pd.Series(np.nan, index=fmeta.index, dtype="float64")
     q_calc.loc[is_first] = fmeta.loc[is_first, "reported_figure"]
-    q_calc.loc[~is_first] = fmeta.loc[~is_first, "reported_figure"] - fmeta.loc[~is_first, "prev_reported_figure"]
+
+    mask = is_duration & ~is_first
+    q_calc.loc[mask] = (
+        fmeta.loc[mask, "reported_figure"] - fmeta.loc[mask, "prev_reported_figure"]
+    )
 
     q_py_calc = pd.Series(np.nan, index=fmeta.index, dtype="float64")
     q_py_calc.loc[is_first] = fmeta.loc[is_first, "reported_figure_py"]
-    q_py_calc.loc[~is_first] = (
-        fmeta.loc[~is_first, "reported_figure_py"] - fmeta.loc[~is_first, "prev_reported_figure_py"]
+
+    mask_py = is_duration & ~is_first
+    q_py_calc.loc[mask_py] = (
+        fmeta.loc[mask_py, "reported_figure_py"] - fmeta.loc[mask_py, "prev_reported_figure_py"]
     )
 
-    # preserve existing if requested
+    # For instants, this function intentionally leaves quarterly values unchanged.
     if keep_existing:
         q_final = fmeta["quarterly_figure"].where(fmeta["quarterly_figure"].notna(), q_calc)
         q_py_final = fmeta["quarterly_figure_py"].where(fmeta["quarterly_figure_py"].notna(), q_py_calc)
     else:
-        q_final, q_py_final = q_calc, q_py_calc
+        q_final = fmeta["quarterly_figure"].copy()
+        q_py_final = fmeta["quarterly_figure_py"].copy()
+        q_final.loc[is_duration] = q_calc.loc[is_duration]
+        q_py_final.loc[is_duration] = q_py_calc.loc[is_duration]
 
-    # assign back by index (no numpy; no reorder bugs)
     out = figures.copy()
     out.loc[fmeta.index, "quarterly_figure"] = q_final
     out.loc[fmeta.index, "quarterly_figure_py"] = q_py_final
@@ -333,7 +343,6 @@ def fill_missing_quarterly_figures(
         out.loc[fmeta.index, "prev_reported_figure"] = fmeta["prev_reported_figure"]
         out.loc[fmeta.index, "prev_reported_figure_py"] = fmeta["prev_reported_figure_py"]
 
-        # enforce integer dtype (avoid float upcast in debug columns)
         out["prev_adsh"] = pd.to_numeric(out["prev_adsh"], errors="coerce").fillna(0).astype("int64")
         out["prev_form"] = out["prev_form"].fillna("").astype("string")
 
@@ -419,10 +428,14 @@ def compute_annual_figures_current_year(
     """
     Compute annual_figure (derived) WITHOUT overwriting source columns.
 
-    Rules:
+    Duration rows (is_instant == False):
       - 10-K*: annual_figure = reported_figure
       - otherwise:
           annual_figure = reported_figure + prev_10k_reported_figure - reported_figure_py
+
+    Instant rows (is_instant == True):
+      - 10-K*: annual_figure = reported_figure
+      - otherwise: annual_figure = NaN
 
     Output:
       Adds column:
@@ -431,7 +444,7 @@ def compute_annual_figures_current_year(
       If debug=True adds:
         - prev_10k_adsh (int64), prev_10k_diff_days (int16), prev_10k_reported_figure (float64)
     """
-    req_fig = {"adsh", "tag", "reported_figure", "reported_figure_py"}
+    req_fig = {"adsh", "tag", "is_instant", "reported_figure", "reported_figure_py"}
     missing = req_fig - set(figures.columns)
     if missing:
         raise ValueError(f"figures missing columns: {sorted(missing)}")
@@ -442,8 +455,8 @@ def compute_annual_figures_current_year(
         raise ValueError(f"submissions missing columns: {sorted(missing)}")
 
     out = figures.copy()
+    out["is_instant"] = out["is_instant"].astype(bool)
 
-    # Work on renamed numeric views (do not overwrite originals)
     ytd_current = pd.to_numeric(out["reported_figure"], errors="coerce").astype("float64")
     ytd_py = pd.to_numeric(out["reported_figure_py"], errors="coerce").astype("float64")
 
@@ -451,6 +464,7 @@ def compute_annual_figures_current_year(
         "__rowid": out.index.to_numpy(),
         "adsh": out["adsh"].to_numpy(),
         "tag": out["tag"].to_numpy(),
+        "is_instant": out["is_instant"].to_numpy(),
         "ytd_current": ytd_current.to_numpy(),
         "ytd_py": ytd_py.to_numpy(),
     })
@@ -470,7 +484,6 @@ def compute_annual_figures_current_year(
 
     tmp = tmp.set_index("__rowid", drop=True)
 
-    # Lookup prev 10-K ytd by (prev_10k_adsh, tag) using ytd_current series from ORIGINAL reported_figure
     idx = pd.MultiIndex.from_frame(out[["adsh", "tag"]])
     ytd_lut = pd.Series(ytd_current.to_numpy(), index=idx, dtype="float64")
 
@@ -479,13 +492,16 @@ def compute_annual_figures_current_year(
     tmp["prev_10k_ytd"] = prev_10k_ytd
 
     annual = pd.Series(np.nan, index=tmp.index, dtype="float64")
+
+    # All 10-K rows: annual is just reported_figure, regardless of instant/duration
     annual.loc[is_10k.to_numpy()] = tmp.loc[is_10k.to_numpy(), "ytd_current"]
 
-    mask = ~is_10k.to_numpy()
-    annual.loc[mask] = (
-        tmp.loc[mask, "ytd_current"].astype("float64")
-        + tmp.loc[mask, "prev_10k_ytd"].astype("float64")
-        - tmp.loc[mask, "ytd_py"].astype("float64")
+    # Only duration non-10-K rows use arithmetic reconstruction
+    mask_duration_non10k = (~tmp["is_instant"].astype(bool)) & (~is_10k.to_numpy())
+    annual.loc[mask_duration_non10k] = (
+        tmp.loc[mask_duration_non10k, "ytd_current"].astype("float64")
+        + tmp.loc[mask_duration_non10k, "prev_10k_ytd"].astype("float64")
+        - tmp.loc[mask_duration_non10k, "ytd_py"].astype("float64")
     )
 
     out["annual_figure"] = annual.astype("float64")
@@ -496,6 +512,7 @@ def compute_annual_figures_current_year(
         out["prev_10k_reported_figure"] = tmp["prev_10k_ytd"].astype("float64")
 
     return out
+
 
 def add_annual_figure_py_from_shifted_reports(
     figures: pd.DataFrame,
