@@ -142,6 +142,8 @@ Expected logical schema:
    - `start_rep`, `end_rep`, `start_q`, `end_q`
    - `start_rep_py`, `end_rep_py`, `start_q_py`, `end_q_py`
 
+`figures_df` also includes `is_instant` (`bool`) to distinguish instant facts (`start == end`) from duration facts (`start != end`). Pivot logic depends on this flag to avoid applying duration-only arithmetic to instant values.
+
 Do not rename these columns without coordinated API/version changes.
 
 ---
@@ -169,6 +171,7 @@ When changing period logic or imputation:
 - Validate amendment-adjusted values are not overwritten by stale originals.
 - Confirm yearly shift mapping (`adsh_py`) still follows tolerance semantics.
 - Preserve output suffix semantics in pivot stage (`_q`, `_q_py`, `_a`, `_a_py`).
+- Keep `is_instant` present through figure transforms and tests; quarterly/annual reconstruction rules now branch on that flag.
 
 Common failure mode: subtle off-by-one window boundaries.  
 Mitigation: regression checks against existing hard-coded reference rows.
