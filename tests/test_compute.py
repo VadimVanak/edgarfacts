@@ -36,6 +36,7 @@ def _base_figures(tags, categories=None):
             "reported_figure_py": [4.0 if t == "B" else 6.0 if t == "C" else None for t in tags],
             "quarterly_figure_py": [4.0 if t == "B" else 6.0 if t == "C" else None for t in tags],
             "is_computed": [False for _ in tags],
+            "is_instant": [False for _ in tags],
         }
     )
 
@@ -81,6 +82,9 @@ class ComputeArcsApplyTests(unittest.TestCase):
 
         self.assertEqual(kept.loc[kept["tag"] == "A", "reported_figure"].iloc[0], 999.0)
         self.assertEqual(replaced.loc[replaced["tag"] == "A", "reported_figure"].iloc[0], 100.0)
+        self.assertIn("is_instant", kept.columns)
+        self.assertFalse(bool(kept.loc[kept["tag"] == "A", "is_instant"].iloc[0]))
+        self.assertIn("is_instant", replaced.columns)
 
     def test_apply_arcs_by_version_uses_submission_taxonomy_version(self):
         figures = pd.DataFrame(
@@ -92,6 +96,7 @@ class ComputeArcsApplyTests(unittest.TestCase):
                 "reported_figure_py": [1.0, 0.5, 0.7, 0.3],
                 "quarterly_figure_py": [1.0, 0.5, 0.7, 0.3],
                 "is_computed": [False, False, False, False],
+                "is_instant": [True, True, False, False],
             }
         )
         sub_df = pd.DataFrame({"adsh": [1, 2], "version": [2022, 2023]})
@@ -113,6 +118,9 @@ class ComputeArcsApplyTests(unittest.TestCase):
         self.assertNotIn("D", adsh1_tags)
         self.assertIn("D", adsh2_tags)
         self.assertNotIn("A", adsh2_tags)
+        self.assertIn("is_instant", result.columns)
+        self.assertTrue(bool(result[(result["adsh"] == 1) & (result["tag"].astype(str) == "A")]["is_instant"].iloc[0]))
+        self.assertFalse(bool(result[(result["adsh"] == 2) & (result["tag"].astype(str) == "D")]["is_instant"].iloc[0]))
 
     def test_filter_unreliable_arcs_safe_default_when_none_qualify(self):
         figures = pd.DataFrame(

@@ -190,7 +190,9 @@ def apply_arcs_to_figures(
     arcs = _encode_arcs(arcs_df, vocab=vocab)
 
     # Work only with needed columns during computation
-    out = out[["adsh", "tag_id", "is_computed"] + _VALUE_COLS].copy()
+    has_is_instant = "is_instant" in out.columns
+    base_cols = ["adsh", "tag_id", "is_computed"] + _VALUE_COLS + (["is_instant"] if has_is_instant else [])
+    out = out[base_cols].copy()
 
     # Deterministic iteration over seq
     seqs = np.sort(arcs["seq"].unique())
@@ -214,11 +216,14 @@ def apply_arcs_to_figures(
             src = src.drop(columns=["weight"])
           
             # Aggregate contributions per (adsh, tag_id)
-            comp = (
-                src.groupby(["adsh", "tag_id"], as_index=False, sort=False)
-                .sum(min_count=1)
-                .assign(is_computed=True)
-            )
+            agg_map = {c: "sum" for c in _VALUE_COLS}
+            if has_is_instant:
+                agg_map["is_instant"] = "all"
+
+            comp = src.groupby(["adsh", "tag_id"], as_index=False, sort=False).agg(agg_map)
+            comp["is_computed"] = True
+            if has_is_instant:
+                comp["is_instant"] = comp["is_instant"].astype(bool)
 
             # Combine with existing, resolving collisions deterministically
             if keep_original_first:
@@ -241,7 +246,7 @@ def apply_arcs_to_figures(
     out = _restore_tag_dtype(out, vocab=vocab, was_categorical=was_categorical)
 
     # Ensure column order similar to input (keep extra cols last if any)
-    cols = ["adsh", "tag"] + _VALUE_COLS + ["is_computed"]
+    cols = ["adsh", "tag"] + _VALUE_COLS + ["is_computed"] + (["is_instant"] if "is_instant" in out.columns else [])
     # Some callers may keep additional columns; preserve them after required cols
     rest = [c for c in out.columns if c not in cols]
     out = out[cols + rest]
@@ -326,7 +331,9 @@ def apply_arcs_by_version(
 
         # Encode figures tags
         f_enc = _encode_figures_tags(f_v, vocab=vocab, is_categorical=was_categorical)
-        f_enc = f_enc[["adsh", "tag_id", "is_computed"] + _VALUE_COLS].copy()
+        has_is_instant = "is_instant" in f_enc.columns
+        base_cols = ["adsh", "tag_id", "is_computed"] + _VALUE_COLS + (["is_instant"] if has_is_instant else [])
+        f_enc = f_enc[base_cols].copy()
 
         seqs = np.sort(a_v["seq"].unique())
         out_enc = f_enc
@@ -340,11 +347,14 @@ def apply_arcs_by_version(
                 src[c] = src[c] * src["weight"]
             src = src.drop(columns=["weight"])
 
-            comp = (
-                src.groupby(["adsh", "tag_id"], as_index=False, sort=False)
-                .sum(min_count=1)
-                .assign(is_computed=True)
-            )
+            agg_map = {c: "sum" for c in _VALUE_COLS}
+            if has_is_instant:
+                agg_map["is_instant"] = "all"
+
+            comp = src.groupby(["adsh", "tag_id"], as_index=False, sort=False).agg(agg_map)
+            comp["is_computed"] = True
+            if has_is_instant:
+                comp["is_instant"] = comp["is_instant"].astype(bool)
             if keep_original_first:
                 out_enc = (
                     pd.concat([out_enc.assign(_prio=1), comp.assign(_prio=2)], ignore_index=True)
@@ -362,7 +372,7 @@ def apply_arcs_by_version(
 
         out_v = _restore_tag_dtype(out_enc, vocab=vocab, was_categorical=was_categorical)
 
-        cols = ["adsh", "tag"] + _VALUE_COLS + ["is_computed"]
+        cols = ["adsh", "tag"] + _VALUE_COLS + ["is_computed"] + (["is_instant"] if "is_instant" in out_v.columns else [])
         rest = [c for c in out_v.columns if c not in cols]
         out_v = out_v[cols + rest]
 
