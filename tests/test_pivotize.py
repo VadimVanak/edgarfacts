@@ -12,6 +12,7 @@ from edgarfacts.transforms.pivotize.pivotize import (
     compute_annual_figures_current_year,
     fill_missing_py_from_shifted_reports,
     fill_missing_quarterly_figures,
+    harmonize_instant_quarterly_and_annual,
 )
 
 
@@ -196,6 +197,27 @@ class PivotizeTests(unittest.TestCase):
         self.assertEqual(out.loc[out["adsh"] == 10, "annual_figure"].iloc[0], 100.0)
         self.assertTrue(pd.isna(out.loc[out["adsh"] == 20, "annual_figure"]).iloc[0])
 
+
+    def test_harmonize_instant_quarterly_and_annual_fills_both_sides(self):
+        figures = pd.DataFrame(
+            {
+                "adsh": [1, 2],
+                "tag": ["Assets", "Assets"],
+                "is_instant": [True, True],
+                "quarterly_figure": [90.0, np.nan],
+                "annual_figure": [np.nan, 110.0],
+                "quarterly_figure_py": [np.nan, 80.0],
+                "annual_figure_py": [70.0, np.nan],
+            }
+        )
+
+        out = harmonize_instant_quarterly_and_annual(figures)
+
+        self.assertEqual(out.loc[out["adsh"] == 1, "annual_figure"].iloc[0], 90.0)
+        self.assertEqual(out.loc[out["adsh"] == 2, "quarterly_figure"].iloc[0], 110.0)
+        self.assertEqual(out.loc[out["adsh"] == 1, "quarterly_figure_py"].iloc[0], 70.0)
+        self.assertEqual(out.loc[out["adsh"] == 2, "annual_figure_py"].iloc[0], 80.0)
+
     def test_transform_and_pivot_figures_end_to_end(self):
         figures = pd.DataFrame(
             {
@@ -233,6 +255,43 @@ class PivotizeTests(unittest.TestCase):
         self.assertIn("Revenue_a_py", out.columns)
         self.assertNotIn("start_rep", out.columns)
         self.assertNotIn("end_rep", out.columns)
+
+    def test_transform_and_pivot_figures_harmonizes_instants_q_and_a(self):
+        figures = pd.DataFrame(
+            {
+                "adsh": [1],
+                "tag": ["Assets"],
+                "is_instant": [True],
+                "reported_figure": [500.0],
+                "quarterly_figure": [500.0],
+                "reported_figure_py": [450.0],
+                "quarterly_figure_py": [450.0],
+            }
+        )
+        submissions = pd.DataFrame(
+            {
+                "adsh": [1],
+                "cik": [1],
+                "form": ["10-Q"],
+                "start_rep": pd.to_datetime(["2024-01-01"]),
+                "end_rep": pd.to_datetime(["2024-03-31"]),
+                "start_rep_py": pd.to_datetime(["2023-01-01"]),
+                "end_rep_py": pd.to_datetime(["2023-03-31"]),
+                "start_q": [pd.NaT],
+                "end_q": [pd.NaT],
+                "start_q_py": [pd.NaT],
+                "end_q_py": [pd.NaT],
+                "is_amended": [False],
+            }
+        )
+
+        out = transform_and_pivot_figures(figures, submissions)
+
+        self.assertEqual(out.loc[1, "Assets_q"], 500.0)
+        self.assertEqual(out.loc[1, "Assets_a"], 500.0)
+        self.assertEqual(out.loc[1, "Assets_q_py"], 450.0)
+        self.assertEqual(out.loc[1, "Assets_a_py"], 450.0)
+
 
 
 if __name__ == "__main__":
