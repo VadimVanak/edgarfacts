@@ -216,11 +216,18 @@ def apply_arcs_to_figures(
             src = src.drop(columns=["weight"])
           
             # Aggregate contributions per (adsh, tag_id)
-            agg_map = {c: "sum" for c in _VALUE_COLS}
+            # Preserve missingness: all-NaN source contributions must remain NaN,
+            # not collapse to 0.0 via the default groupby-sum behavior.
+            comp = (
+                src.groupby(["adsh", "tag_id"], as_index=False, sort=False)[_VALUE_COLS]
+                .sum(min_count=1)
+            )
             if has_is_instant:
-                agg_map["is_instant"] = "all"
-
-            comp = src.groupby(["adsh", "tag_id"], as_index=False, sort=False).agg(agg_map)
+                inst_flags = (
+                    src.groupby(["adsh", "tag_id"], as_index=False, sort=False)["is_instant"]
+                    .all()
+                )
+                comp = comp.merge(inst_flags, on=["adsh", "tag_id"], how="left", sort=False)
             comp["is_computed"] = True
             if has_is_instant:
                 comp["is_instant"] = comp["is_instant"].astype(bool)
@@ -347,11 +354,18 @@ def apply_arcs_by_version(
                 src[c] = src[c] * src["weight"]
             src = src.drop(columns=["weight"])
 
-            agg_map = {c: "sum" for c in _VALUE_COLS}
+            # Preserve missingness: all-NaN source contributions must remain NaN,
+            # not collapse to 0.0 via the default groupby-sum behavior.
+            comp = (
+                src.groupby(["adsh", "tag_id"], as_index=False, sort=False)[_VALUE_COLS]
+                .sum(min_count=1)
+            )
             if has_is_instant:
-                agg_map["is_instant"] = "all"
-
-            comp = src.groupby(["adsh", "tag_id"], as_index=False, sort=False).agg(agg_map)
+                inst_flags = (
+                    src.groupby(["adsh", "tag_id"], as_index=False, sort=False)["is_instant"]
+                    .all()
+                )
+                comp = comp.merge(inst_flags, on=["adsh", "tag_id"], how="left", sort=False)
             comp["is_computed"] = True
             if has_is_instant:
                 comp["is_instant"] = comp["is_instant"].astype(bool)
