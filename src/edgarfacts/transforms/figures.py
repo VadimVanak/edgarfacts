@@ -217,6 +217,9 @@ def build_base_figures(
 
     # Enforce dtypes
     figures["adsh"] = pd.to_numeric(figures["adsh"], errors="raise").astype("int64")
+    # NOTE: errors="coerce" converts non-numeric tokens to NaN (not 0.0).
+    # Missing figures should remain NaN so downstream steps can distinguish
+    # absent values from explicit zeros in SEC submissions.
     figures["reported_figure"] = pd.to_numeric(figures["reported_figure"], errors="coerce").astype("float64")
     figures["quarterly_figure"] = pd.to_numeric(figures["quarterly_figure"], errors="coerce").astype("float64")
     figures["reported_figure_py"] = pd.to_numeric(figures["reported_figure_py"], errors="coerce").astype("float64")

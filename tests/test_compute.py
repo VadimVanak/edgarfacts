@@ -59,6 +59,34 @@ class ComputeArcsApplyTests(unittest.TestCase):
         self.assertEqual(a_row["reported_figure"], 100.0)
         self.assertTrue(bool(a_row["is_computed"]))
 
+    def test_apply_arcs_to_figures_preserves_nan_when_all_sources_missing(self):
+        figures = pd.DataFrame(
+            {
+                "adsh": [1, 1, 1],
+                "tag": pd.Categorical(["A", "B", "C"], categories=["A", "B", "C"]),
+                "reported_figure": [None, None, None],
+                "quarterly_figure": [None, None, None],
+                "reported_figure_py": [None, None, None],
+                "quarterly_figure_py": [None, None, None],
+                "is_computed": [False, False, False],
+                "is_instant": [False, False, False],
+            }
+        )
+        arcs = pd.DataFrame(
+            {
+                "seq": [0, 0],
+                "from": ["A", "A"],
+                "to": ["B", "C"],
+                "weight": [1.0, 1.0],
+            }
+        )
+
+        result = apply_arcs_to_figures(figures, arcs, keep_original_first=False)
+        a_row = result[result["tag"].astype(str) == "A"].iloc[0]
+
+        self.assertTrue(pd.isna(a_row["reported_figure"]))
+        self.assertTrue(pd.isna(a_row["quarterly_figure"]))
+
     def test_apply_arcs_to_figures_honors_keep_original_first(self):
         figures = _base_figures(["A", "B", "C"], categories=["A", "B", "C"])
         figures.loc[figures["tag"] == "A", [
@@ -121,6 +149,36 @@ class ComputeArcsApplyTests(unittest.TestCase):
         self.assertIn("is_instant", result.columns)
         self.assertTrue(bool(result[(result["adsh"] == 1) & (result["tag"].astype(str) == "A")]["is_instant"].iloc[0]))
         self.assertFalse(bool(result[(result["adsh"] == 2) & (result["tag"].astype(str) == "D")]["is_instant"].iloc[0]))
+
+    def test_apply_arcs_by_version_preserves_nan_when_all_sources_missing(self):
+        figures = pd.DataFrame(
+            {
+                "adsh": [1, 1],
+                "tag": pd.Categorical(["B", "C"], categories=["A", "B", "C"]),
+                "reported_figure": [None, None],
+                "quarterly_figure": [None, None],
+                "reported_figure_py": [None, None],
+                "quarterly_figure_py": [None, None],
+                "is_computed": [False, False],
+                "is_instant": [False, False],
+            }
+        )
+        sub_df = pd.DataFrame({"adsh": [1], "version": [2022]})
+        arcs = pd.DataFrame(
+            {
+                "version": [2022, 2022],
+                "seq": [0, 0],
+                "from": ["A", "A"],
+                "to": ["B", "C"],
+                "weight": [1.0, 1.0],
+            }
+        )
+
+        result = apply_arcs_by_version(figures, sub_df, arcs, logger=_Logger(), keep_original_first=False)
+        a_row = result[result["tag"].astype(str) == "A"].iloc[0]
+
+        self.assertTrue(pd.isna(a_row["reported_figure"]))
+        self.assertTrue(pd.isna(a_row["quarterly_figure"]))
 
     def test_filter_unreliable_arcs_safe_default_when_none_qualify(self):
         figures = pd.DataFrame(
