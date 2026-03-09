@@ -616,8 +616,15 @@ def harmonize_instant_quarterly_and_annual(figures: pd.DataFrame) -> pd.DataFram
     return out
 
 def remove_infrequent_figures(df):
+    value_cols = ["reported_figure", "quarterly_figure", "reported_figure_py", "quarterly_figure_py"]
+    missing = [c for c in value_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"figures missing columns: {sorted(missing)}")
+
+    non_empty = df[value_cols].notna().any(axis=1)
+
     stat = (
-        df.reset_index()[["tag", "reported_figure"]]
+        df.loc[non_empty, ["tag"]]
         .groupby("tag", observed=True, as_index=False)
         .size()
         .sort_values(by="size", ascending=False)
@@ -626,7 +633,7 @@ def remove_infrequent_figures(df):
     informative_tags = stat[stat["size"] > stat["rank"]]["tag"].values
 
     df.reset_index(inplace=True)
-    df = df[df['tag'].isin(informative_tags)&~df['reported_figure'].isna()].copy()
+    df = df[df["tag"].isin(informative_tags) & non_empty].copy()
     return df
     
 
