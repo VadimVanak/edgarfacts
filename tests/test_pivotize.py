@@ -293,6 +293,7 @@ class PivotizeTests(unittest.TestCase):
         self.assertEqual(out.loc[1, "Assets_a_py"], 450.0)
 
 
+<<<<<<< codex/check-nan-handling-in-figures-conversion-lmk2gh
     def test_transform_and_pivot_figures_keeps_instant_when_reported_missing(self):
         figures = pd.DataFrame(
             {
@@ -378,6 +379,8 @@ class PivotizeTests(unittest.TestCase):
         )
 
 
+=======
+>>>>>>> main
 
 if __name__ == "__main__":
     unittest.main()

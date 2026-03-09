@@ -604,20 +604,26 @@ def harmonize_instant_quarterly_and_annual(figures: pd.DataFrame) -> pd.DataFram
     # Current year instant alignment
     q = out.loc[is_inst, "quarterly_figure"]
     a = out.loc[is_inst, "annual_figure"]
+<<<<<<< codex/check-nan-handling-in-figures-conversion-lmk2gh
     if "reported_figure" in out.columns:
         r = pd.to_numeric(out.loc[is_inst, "reported_figure"], errors="coerce").astype("float64")
         q = q.where(q.notna(), r)
         a = a.where(a.notna(), r)
+=======
+>>>>>>> main
     out.loc[is_inst, "quarterly_figure"] = q.where(q.notna(), a)
     out.loc[is_inst, "annual_figure"] = a.where(a.notna(), q)
 
     # Prior-year instant alignment
     q_py = out.loc[is_inst, "quarterly_figure_py"]
     a_py = out.loc[is_inst, "annual_figure_py"]
+<<<<<<< codex/check-nan-handling-in-figures-conversion-lmk2gh
     if "reported_figure_py" in out.columns:
         r_py = pd.to_numeric(out.loc[is_inst, "reported_figure_py"], errors="coerce").astype("float64")
         q_py = q_py.where(q_py.notna(), r_py)
         a_py = a_py.where(a_py.notna(), r_py)
+=======
+>>>>>>> main
     out.loc[is_inst, "quarterly_figure_py"] = q_py.where(q_py.notna(), a_py)
     out.loc[is_inst, "annual_figure_py"] = a_py.where(a_py.notna(), q_py)
 
@@ -640,7 +646,13 @@ def remove_infrequent_figures(df):
     stat["rank"] = range(len(stat))
     informative_tags = stat[stat["size"] > stat["rank"]]["tag"].values
 
+<<<<<<< codex/check-nan-handling-in-figures-conversion-lmk2gh
     return df.loc[df["tag"].isin(informative_tags) & non_empty].copy()
+=======
+    df.reset_index(inplace=True)
+    df = df[df["tag"].isin(informative_tags) & non_empty].copy()
+    return df
+>>>>>>> main
     
 
 def transform_and_pivot_figures(
