@@ -574,8 +574,6 @@ def add_annual_figure_py_from_shifted_reports(
     return out
 
 
-
-
 def harmonize_instant_quarterly_and_annual(figures: pd.DataFrame) -> pd.DataFrame:
     """
     For instant facts, quarterly and annual views represent the same point-in-time value.
@@ -608,6 +606,12 @@ def harmonize_instant_quarterly_and_annual(figures: pd.DataFrame) -> pd.DataFram
         r = pd.to_numeric(out.loc[is_inst, "reported_figure"], errors="coerce").astype("float64")
         q = q.where(q.notna(), r)
         a = a.where(a.notna(), r)
+    out.loc[is_inst, "quarterly_figure"] = q.where(q.notna(), a)
+    out.loc[is_inst, "annual_figure"] = a.where(a.notna(), q)
+
+    # Prior-year instant alignment
+    q_py = out.loc[is_inst, "quarterly_figure_py"]
+    a_py = out.loc[is_inst, "annual_figure_py"]
     if "reported_figure_py" in out.columns:
         r_py = pd.to_numeric(out.loc[is_inst, "reported_figure_py"], errors="coerce").astype("float64")
         q_py = q_py.where(q_py.notna(), r_py)
@@ -616,6 +620,7 @@ def harmonize_instant_quarterly_and_annual(figures: pd.DataFrame) -> pd.DataFram
     out.loc[is_inst, "annual_figure_py"] = a_py.where(a_py.notna(), q_py)
 
     return out
+    
 
 def remove_infrequent_figures(df):
     value_cols = ["reported_figure", "quarterly_figure", "reported_figure_py", "quarterly_figure_py"]
