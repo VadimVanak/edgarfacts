@@ -293,6 +293,94 @@ class PivotizeTests(unittest.TestCase):
         self.assertEqual(out.loc[1, "Assets_a_py"], 450.0)
 
 
+<<<<<<< codex/check-nan-handling-in-figures-conversion-lmk2gh
+    def test_transform_and_pivot_figures_keeps_instant_when_reported_missing(self):
+        figures = pd.DataFrame(
+            {
+                "adsh": [1],
+                "tag": ["Assets"],
+                "is_instant": [True],
+                "reported_figure": [np.nan],
+                "quarterly_figure": [500.0],
+                "reported_figure_py": [np.nan],
+                "quarterly_figure_py": [450.0],
+            }
+        )
+        submissions = pd.DataFrame(
+            {
+                "adsh": [1],
+                "cik": [1],
+                "form": ["10-Q"],
+                "start_rep": pd.to_datetime(["2024-01-01"]),
+                "end_rep": pd.to_datetime(["2024-03-31"]),
+                "start_rep_py": pd.to_datetime(["2023-01-01"]),
+                "end_rep_py": pd.to_datetime(["2023-03-31"]),
+                "start_q": [pd.NaT],
+                "end_q": [pd.NaT],
+                "start_q_py": [pd.NaT],
+                "end_q_py": [pd.NaT],
+                "is_amended": [False],
+            }
+        )
+
+        out = transform_and_pivot_figures(figures, submissions)
+
+        self.assertEqual(out.loc[1, "Assets_q"], 500.0)
+        self.assertEqual(out.loc[1, "Assets_a"], 500.0)
+        self.assertEqual(out.loc[1, "Assets_q_py"], 450.0)
+        self.assertEqual(out.loc[1, "Assets_a_py"], 450.0)
+
+    def test_transform_and_pivot_figures_keeps_single_instant_from_reported(self):
+        figures = pd.DataFrame(
+            {
+                "adsh": [156459022035087],
+                "tag": ["CashAndCashEquivalentsAtCarryingValue"],
+                "reported_figure": [2.2884e10],
+                "quarterly_figure": [np.nan],
+                "reported_figure_py": [np.nan],
+                "quarterly_figure_py": [np.nan],
+                "is_computed": [False],
+                "is_instant": [True],
+            }
+        )
+        submissions = pd.DataFrame(
+            {
+                "adsh": [156459022035087],
+                "cik": [789019],
+                "sic": [7372],
+                "form": ["10-Q"],
+                "period": pd.to_datetime(["2022-09-30"]),
+                "accepted": pd.to_datetime(["2022-10-25 16:09:00"]),
+                "version": [2022],
+                "amendment_adsh": [0],
+                "is_amended": [False],
+                "ticker": ["msft"],
+                "start_rep": pd.to_datetime(["2022-07-01"]),
+                "end_rep": pd.to_datetime(["2022-09-30"]),
+                "start_q": [pd.NaT],
+                "end_q": [pd.NaT],
+                "start_rep_py": pd.to_datetime(["2021-07-01"]),
+                "end_rep_py": pd.to_datetime(["2021-09-30"]),
+                "start_q_py": [pd.NaT],
+                "end_q_py": [pd.NaT],
+            }
+        )
+
+        out = transform_and_pivot_figures(figures, submissions)
+
+        self.assertFalse(out.empty)
+        self.assertEqual(
+            out.loc[156459022035087, "CashAndCashEquivalentsAtCarryingValue_q"],
+            2.2884e10,
+        )
+        self.assertEqual(
+            out.loc[156459022035087, "CashAndCashEquivalentsAtCarryingValue_a"],
+            2.2884e10,
+        )
+
+
+=======
+>>>>>>> main
 
 if __name__ == "__main__":
     unittest.main()
