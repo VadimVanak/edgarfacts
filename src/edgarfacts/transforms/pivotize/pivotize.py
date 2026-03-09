@@ -574,6 +574,47 @@ def add_annual_figure_py_from_shifted_reports(
     return out
 
 
+
+
+def harmonize_instant_quarterly_and_annual(figures: pd.DataFrame) -> pd.DataFrame:
+    """
+    For instant facts, quarterly and annual views represent the same point-in-time value.
+
+    If one side is present and the other is missing, copy the available value so both are populated:
+      - quarterly_figure <-> annual_figure
+      - quarterly_figure_py <-> annual_figure_py
+    """
+    req = {
+        "is_instant",
+        "quarterly_figure",
+        "annual_figure",
+        "quarterly_figure_py",
+        "annual_figure_py",
+    }
+    missing = req - set(figures.columns)
+    if missing:
+        raise ValueError(f"figures missing columns: {sorted(missing)}")
+
+    out = figures.copy()
+    is_inst = out["is_instant"].astype(bool)
+
+    for c in ["quarterly_figure", "annual_figure", "quarterly_figure_py", "annual_figure_py"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce").astype("float64")
+
+    # Current year instant alignment
+    q = out.loc[is_inst, "quarterly_figure"]
+    a = out.loc[is_inst, "annual_figure"]
+    out.loc[is_inst, "quarterly_figure"] = q.where(q.notna(), a)
+    out.loc[is_inst, "annual_figure"] = a.where(a.notna(), q)
+
+    # Prior-year instant alignment
+    q_py = out.loc[is_inst, "quarterly_figure_py"]
+    a_py = out.loc[is_inst, "annual_figure_py"]
+    out.loc[is_inst, "quarterly_figure_py"] = q_py.where(q_py.notna(), a_py)
+    out.loc[is_inst, "annual_figure_py"] = a_py.where(a_py.notna(), q_py)
+
+    return out
+
 def remove_infrequent_figures(df):
     stat = (
         df.reset_index()[["tag", "reported_figure"]]
@@ -648,6 +689,7 @@ def transform_and_pivot_figures(
     df = add_annual_figure_py_from_shifted_reports(
         df, submissions, tol_days=tol_days, match_form_family=match_form_family, debug=False
     )
+    df = harmonize_instant_quarterly_and_annual(df)
 
     # ---- 2) submissions: annual + quarterly intervals (with imputation) ----
     sub_req = {
