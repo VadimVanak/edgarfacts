@@ -191,8 +191,6 @@ def extract_submissions_and_facts_internal(fetcher: URLFetcher, logger, debug_mo
         sub["accepted"] = sub["accepted"].astype("datetime64[s]")
 
     # Keep only submissions that actually have facts.
-    valid_adsh = df["adsh"].dropna().astype("int64").unique()
-    sub = sub[sub["adsh"].isin(valid_adsh)].copy()
     sub = normalize_submission_dtypes(sub)
     
     return df, sub
@@ -362,8 +360,6 @@ def extract_submissions_and_facts_delta(
     logger.info(f"Final submissions count before final fact filter: {len(sub)}")
 
     # Keep only submissions that actually have facts.
-    valid_adsh = df["adsh"].dropna().astype("int64").unique()
-    sub = sub[sub["adsh"].isin(valid_adsh)].copy()
     sub = normalize_submission_dtypes(sub)
 
     logger.info(f"Final submissions count after final fact filter: {len(sub)}")
