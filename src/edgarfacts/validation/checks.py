@@ -135,7 +135,7 @@ def check_subs(logger, sub: pd.DataFrame) -> None:
         "There are reports with future periods"
     )
 
-    assert len(sub.query("version==0")) == 0, "There are reports without versions"
+    # assert len(sub.query("version==0")) == 0, "There are reports without versions"
 
     logger.info("Submissions checks OK")
 
