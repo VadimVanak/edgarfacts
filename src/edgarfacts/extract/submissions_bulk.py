@@ -248,6 +248,14 @@ def repair_version(sub: pd.DataFrame) -> pd.DataFrame:
     sub["version"] = sub.groupby("cik", as_index=False)["version"].ffill()
 
     sub.sort_values(by=["cik", "accepted"], ascending=[True, False], inplace=True)
-    sub["version"] = sub.groupby("cik", as_index=False)["version"].ffill().fillna(0).astype(int)
+    sub["version"] = sub.groupby("cik", as_index=False)["version"].ffill()
+
+    unresolved = sub["version"].isna().sum()
+    if unresolved:
+        pass
+
+    # Some CIKs may still have no known taxonomy version at all.
+    # Keep unresolved values as 0 instead of failing.
+    sub["version"] = sub["version"].fillna(0).astype(int)
 
     return sub

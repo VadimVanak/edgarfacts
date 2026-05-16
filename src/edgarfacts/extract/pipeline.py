@@ -73,8 +73,13 @@ def normalize_submission_dtypes(sub: pd.DataFrame) -> pd.DataFrame:
 
     if "amendment_adsh" in sub.columns:
         sub["amendment_adsh"] = (
-            pd.to_numeric(sub["amendment_adsh"], errors="raise").fillna(0).astype("int64")
+            pd.to_numeric(sub["amendment_adsh"], errors="raise")
+            .fillna(0)
+            .astype("int64")
         )
+
+    if "ticker" in sub.columns:
+        sub["ticker"] = sub["ticker"].astype("category")
 
     if sub["period"].dtype != np.dtype("datetime64[s]"):
         sub["period"] = sub["period"].astype("datetime64[s]")
@@ -294,18 +299,15 @@ def extract_submissions_and_facts_delta(
     # 7) Join ticker information.
     delta_sub = delta_sub.merge(tickers, how="inner", on="cik")
 
-    # 8) Normalize dtypes for new submissions before concatenation.
+    # 8) Normalize dtypes for new submissions before fact extraction.
     delta_sub = normalize_submission_dtypes(delta_sub)
 
-    # 9) Combine with previous submissions, then recompute global amendment/version
-    # state because a new amendment can affect old rows.
-    sub = pd.concat([prev_sub, delta_sub], ignore_index=True)
-    sub = sub.drop_duplicates(subset=["adsh"], keep="last")
-    sub = set_amended_flag(sub)
-    sub = repair_version(sub)
-    sub = normalize_submission_dtypes(sub)
+    logger.info(
+        f"Delta submissions with unresolved version before fact extraction: "
+        f"{(delta_sub['version'] == 0).sum()}"
+    )
 
-    # 10) Extract facts only for the newly discovered submissions. Do not call
+    # 9) Extract facts only for the newly discovered submissions. Do not call
     # read_missing_figures_2 here because it scans all historical submissions
     # without facts.
     delta_df = read_missing_figures(
@@ -315,8 +317,21 @@ def extract_submissions_and_facts_delta(
         logger=logger,
     )
 
+    # 10) Keep only delta submissions that actually produced facts.
     if delta_df is not None and len(delta_df) > 0:
         logger.info(f"{len(delta_df)} new facts extracted")
+
+        valid_delta_adsh = delta_df["adsh"].dropna().astype("int64").unique()
+
+        before_fact_filter = len(delta_sub)
+        delta_sub = delta_sub[delta_sub["adsh"].isin(valid_delta_adsh)].copy()
+        after_fact_filter = len(delta_sub)
+
+        logger.info(
+            f"Delta submissions after fact filter: "
+            f"{after_fact_filter} of {before_fact_filter}"
+        )
+
         df = pd.concat([prev_df, delta_df], ignore_index=True)
         df = df.drop_duplicates(
             subset=["adsh", "tag", "start", "end", "value"],
@@ -325,17 +340,29 @@ def extract_submissions_and_facts_delta(
         df = normalize_facts_dtypes(df, tag_list)
     else:
         logger.info("No new facts extracted for delta submissions")
+        delta_sub = delta_sub.iloc[0:0].copy()
         df = normalize_facts_dtypes(prev_df, tag_list)
 
+    # 11) Combine with previous submissions only after removing delta submissions
+    # that did not produce facts.
+    sub = pd.concat([prev_sub, delta_sub], ignore_index=True)
+    sub = sub.drop_duplicates(subset=["adsh"], keep="last")
+
+    # Recompute global amendment/version state because a new amendment can affect old rows.
+    sub = set_amended_flag(sub)
+    sub = repair_version(sub)
+    sub = normalize_submission_dtypes(sub)
+
     logger.info(f"Final facts count: {len(df)}")
-    
+    logger.info(f"Final submissions count before final fact filter: {len(sub)}")
+
     # Keep only submissions that actually have facts.
-    valid_adsh = df["adsh"].unique()
+    valid_adsh = df["adsh"].dropna().astype("int64").unique()
     sub = sub[sub["adsh"].isin(valid_adsh)].copy()
-    sub['ticker'] = sub['ticker'].astype('category')
-    
-    logger.info(f"Final submissions count after fact filter: {len(sub)}")
-    
+    sub = normalize_submission_dtypes(sub)
+
+    logger.info(f"Final submissions count after final fact filter: {len(sub)}")
+
     return df.reset_index(drop=True), sub.reset_index(drop=True)
 
 
