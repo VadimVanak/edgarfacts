@@ -211,9 +211,10 @@ def extract_submissions_and_facts_delta(
     # Full mode only processes periods returned by read_periods(fetcher),
     # therefore delta mode should ignore submissions older than the first
     # available FSD period.
-    period_arr = read_periods(fetcher)
+    #period_arr = read_periods(fetcher)
     
-    first_year, first_quarter = period_arr[0]
+    #first_year, first_quarter = period_arr[0]
+    first_year, first_quarter = 2024, 1
     
     # Convert first supported FSD quarter into timestamp.
     # Example:
