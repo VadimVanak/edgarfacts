@@ -190,6 +190,11 @@ def extract_submissions_and_facts_internal(fetcher: URLFetcher, logger, debug_mo
     if sub["accepted"].dtype != np.dtype("datetime64[s]"):
         sub["accepted"] = sub["accepted"].astype("datetime64[s]")
 
+    # Keep only submissions that actually have facts.
+    valid_adsh = df["adsh"].dropna().astype("int64").unique()
+    sub = sub[sub["adsh"].isin(valid_adsh)].copy()
+    sub = normalize_submission_dtypes(sub)
+    
     return df, sub
 
 
