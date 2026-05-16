@@ -3,7 +3,7 @@
 Main extraction pipeline for edgarfacts.
 
 Public entry point:
-- extract_submissions_and_facts(logger, debug_mode=False)
+- extract_submissions_and_facts(logger, debug_mode=False, prev_df=None, prev_sub=None)
 
 This orchestrates:
 - ticker mapping (ticker.txt)
@@ -22,6 +22,8 @@ Important:
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 
@@ -38,7 +40,48 @@ from edgarfacts.extract.submissions_bulk import (
     read_missing_submissions,
     repair_version,
 )
-from edgarfacts.extract.missing_figures import read_missing_figures_2
+from edgarfacts.extract.missing_figures import read_missing_figures, read_missing_figures_2
+
+
+def normalize_submission_dtypes(sub: pd.DataFrame) -> pd.DataFrame:
+    """Normalize submission columns to the stable full-pipeline dtypes."""
+    sub = sub.copy()
+
+    sub["cik"] = pd.to_numeric(sub["cik"], errors="raise").astype("int64")
+    sub["sic"] = pd.to_numeric(sub["sic"], errors="raise").astype("int64")
+    sub["adsh"] = pd.to_numeric(sub["adsh"], errors="raise").astype("int64")
+    sub["version"] = pd.to_numeric(sub["version"], errors="raise").astype("int64")
+
+    if "amendment_adsh" in sub.columns:
+        sub["amendment_adsh"] = (
+            pd.to_numeric(sub["amendment_adsh"], errors="raise").fillna(0).astype("int64")
+        )
+
+    if sub["period"].dtype != np.dtype("datetime64[s]"):
+        sub["period"] = sub["period"].astype("datetime64[s]")
+
+    if sub["accepted"].dtype != np.dtype("datetime64[s]"):
+        sub["accepted"] = sub["accepted"].astype("datetime64[s]")
+
+    return sub
+
+
+def normalize_facts_dtypes(df: pd.DataFrame, tag_list: np.ndarray) -> pd.DataFrame:
+    """Normalize facts columns to the stable full-pipeline dtypes."""
+    df = df.copy()
+
+    df["adsh"] = pd.to_numeric(df["adsh"], errors="raise").astype("int64")
+    df["tag"] = pd.Categorical(df["tag"], categories=tag_list)
+
+    if df["start"].dtype != np.dtype("datetime64[s]"):
+        df["start"] = df["start"].astype("datetime64[s]")
+
+    if df["end"].dtype != np.dtype("datetime64[s]"):
+        df["end"] = df["end"].astype("datetime64[s]")
+
+    df["value"] = pd.to_numeric(df["value"], errors="coerce").astype(float)
+
+    return df
 
 
 def extract_submissions_and_facts_internal(fetcher: URLFetcher, logger, debug_mode: bool = False):
@@ -116,7 +159,7 @@ def extract_submissions_and_facts_internal(fetcher: URLFetcher, logger, debug_mo
     sub["adsh"] = pd.to_numeric(sub["adsh"], errors="raise").astype("int64")
     sub["version"] = pd.to_numeric(sub["version"], errors="raise").astype("int64")
     sub["amendment_adsh"] = pd.to_numeric(sub["amendment_adsh"], errors="raise").astype("int64")
-    
+
     # Ensure datetime64[s] (defensive; should already be)
     if sub["period"].dtype != np.dtype("datetime64[s]"):
         sub["period"] = sub["period"].astype("datetime64[s]")
@@ -126,7 +169,108 @@ def extract_submissions_and_facts_internal(fetcher: URLFetcher, logger, debug_mo
     return df, sub
 
 
-def extract_submissions_and_facts(logger, debug_mode: bool = False):
+def extract_submissions_and_facts_delta(
+    fetcher: URLFetcher,
+    logger,
+    prev_df: pd.DataFrame,
+    prev_sub: pd.DataFrame,
+    debug_mode: bool = False,
+):
+    """Run an incremental extraction using previous facts and submissions."""
+    logger.info("Running extraction pipeline in delta mode")
+    logger.info(f"{len(prev_sub)} previous submissions provided")
+    logger.info(f"{len(prev_df)} previous facts provided")
+
+    # Defensive copies keep caller-owned frames untouched.
+    prev_df = prev_df.copy()
+    prev_sub = prev_sub.copy()
+
+    # 1) Tickers
+    tickers = read_tickers(fetcher)
+    logger.info(f"{len(tickers)} tickers loaded")
+
+    if debug_mode:
+        tickers = tickers.query("ticker=='msft' or ticker=='nvda'").copy()
+
+    # 2) Tags
+    tag_list = read_tags(fetcher)
+
+    # 3) Valid CIKs
+    valid_ciks = tickers.cik.unique()
+
+    # 4) Current bulk submissions from submissions.zip. This is much cheaper than
+    # full companyfacts plus quarterly FSD loading.
+    current_bulk_sub = read_submissions_2(valid_ciks, fetcher, logger)
+    logger.info(f"{len(current_bulk_sub)} current bulk submissions loaded")
+
+    # 5) Find accession numbers not already present in historical facts or submissions.
+    known_adsh = np.union1d(
+        prev_df["adsh"].dropna().astype("int64").unique(),
+        prev_sub["adsh"].dropna().astype("int64").unique(),
+    )
+
+    delta_sub_raw = current_bulk_sub[~current_bulk_sub["adsh"].isin(known_adsh)].copy()
+    logger.info(f"{len(delta_sub_raw)} new submissions found")
+
+    if len(delta_sub_raw) == 0:
+        logger.info("No new submissions found. Returning previous data.")
+        sub = repair_version(set_amended_flag(prev_sub))
+        sub = normalize_submission_dtypes(sub)
+        logger.info(f"Final submissions count: {len(sub)}")
+        logger.info(f"Final facts count: {len(prev_df)}")
+        return prev_df.reset_index(drop=True), sub.reset_index(drop=True)
+
+    # 6) Enrich version info only for new submissions.
+    delta_sub = update_version_info(delta_sub_raw, fetcher=fetcher, logger=logger)
+
+    # 7) Join ticker information.
+    delta_sub = delta_sub.merge(tickers, how="inner", on="cik")
+
+    # 8) Normalize dtypes for new submissions before concatenation.
+    delta_sub = normalize_submission_dtypes(delta_sub)
+
+    # 9) Combine with previous submissions, then recompute global amendment/version
+    # state because a new amendment can affect old rows.
+    sub = pd.concat([prev_sub, delta_sub], ignore_index=True)
+    sub = sub.drop_duplicates(subset=["adsh"], keep="last")
+    sub = set_amended_flag(sub)
+    sub = repair_version(sub)
+    sub = normalize_submission_dtypes(sub)
+
+    # 10) Extract facts only for the newly discovered submissions. Do not call
+    # read_missing_figures_2 here because it scans all historical submissions
+    # without facts.
+    delta_df = read_missing_figures(
+        sub=delta_sub,
+        tag_list=tag_list,
+        fetcher=fetcher,
+        logger=logger,
+    )
+
+    if delta_df is not None and len(delta_df) > 0:
+        logger.info(f"{len(delta_df)} new facts extracted")
+        df = pd.concat([prev_df, delta_df], ignore_index=True)
+        df = df.drop_duplicates(
+            subset=["adsh", "tag", "start", "end", "value"],
+            keep="last",
+        )
+        df = normalize_facts_dtypes(df, tag_list)
+    else:
+        logger.info("No new facts extracted for delta submissions")
+        df = normalize_facts_dtypes(prev_df, tag_list)
+
+    logger.info(f"Final submissions count: {len(sub)}")
+    logger.info(f"Final facts count: {len(df)}")
+
+    return df.reset_index(drop=True), sub.reset_index(drop=True)
+
+
+def extract_submissions_and_facts(
+    logger,
+    debug_mode: bool = False,
+    prev_df: Optional[pd.DataFrame] = None,
+    prev_sub: Optional[pd.DataFrame] = None,
+):
     """
     Public pipeline entry point.
 
@@ -136,6 +280,10 @@ def extract_submissions_and_facts(logger, debug_mode: bool = False):
         Logger instance (use edgarfacts.get_logger()).
     debug_mode:
         If True, run a reduced extraction for development/testing.
+    prev_df:
+        Previous facts dataframe. If provided with ``prev_sub``, delta mode is used.
+    prev_sub:
+        Previous submissions dataframe. If provided with ``prev_df``, delta mode is used.
 
     Returns
     -------
@@ -145,10 +293,22 @@ def extract_submissions_and_facts(logger, debug_mode: bool = False):
     """
     fetcher = URLFetcher(logger)
 
-    df, sub = extract_submissions_and_facts_internal(fetcher, logger, debug_mode=debug_mode)
+    if prev_df is None or prev_sub is None:
+        logger.info("Running extraction pipeline in full mode")
+        df, sub = extract_submissions_and_facts_internal(fetcher, logger, debug_mode=debug_mode)
 
-    # Repair versions and pull missing figures (fallback)
-    sub = repair_version(sub)
-    df = read_missing_figures_2(fetcher, logger, df, sub).reset_index(drop=True)
+        # Repair versions and pull missing figures (fallback)
+        sub = repair_version(sub)
+        df = read_missing_figures_2(fetcher, logger, df, sub).reset_index(drop=True)
+        logger.info(f"Final submissions count: {len(sub)}")
+        logger.info(f"Final facts count: {len(df)}")
 
-    return df, sub
+        return df, sub
+
+    return extract_submissions_and_facts_delta(
+        fetcher=fetcher,
+        logger=logger,
+        prev_df=prev_df,
+        prev_sub=prev_sub,
+        debug_mode=debug_mode,
+    )
