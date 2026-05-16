@@ -43,6 +43,25 @@ from edgarfacts.extract.submissions_bulk import (
 from edgarfacts.extract.missing_figures import read_missing_figures, read_missing_figures_2
 
 
+def determine_delta_first_period(prev_sub: pd.DataFrame) -> tuple[int, int]:
+    """Return the first quarter delta mode should consider from prior submissions.
+
+    Delta extraction re-processes a small lookback window relative to the most
+    recent known filing acceptance timestamp.  The first supported quarter is
+    two quarters before that latest accepted date.
+    """
+    accepted = pd.to_datetime(prev_sub["accepted"], errors="coerce")
+    latest_accepted = accepted.max()
+
+    if pd.isna(latest_accepted):
+        raise ValueError("prev_sub must contain at least one valid accepted timestamp")
+
+    first_period_date = pd.Timestamp(latest_accepted) - pd.DateOffset(months=6)
+    first_quarter = (int(first_period_date.month) - 1) // 3 + 1
+
+    return int(first_period_date.year), int(first_quarter)
+
+
 def normalize_submission_dtypes(sub: pd.DataFrame) -> pd.DataFrame:
     """Normalize submission columns to the stable full-pipeline dtypes."""
     sub = sub.copy()
@@ -207,16 +226,13 @@ def extract_submissions_and_facts_delta(
     current_bulk_sub = read_submissions_2(valid_ciks, fetcher, logger)
     logger.info(f"{len(current_bulk_sub)} current bulk submissions loaded")
 
-    # Use the same historical coverage boundary as the full pipeline.
-    # Full mode only processes periods returned by read_periods(fetcher),
-    # therefore delta mode should ignore submissions older than the first
-    # available FSD period.
-    #period_arr = read_periods(fetcher)
-    
-    #first_year, first_quarter = period_arr[0]
-    first_year, first_quarter = 2024, 1
-    
-    # Convert first supported FSD quarter into timestamp.
+    # Delta mode uses a rolling historical coverage boundary based on the
+    # newest previously accepted submission. Look back two quarters so late
+    # amendments and recently added submissions are evaluated against a small
+    # stable overlap window.
+    first_year, first_quarter = determine_delta_first_period(prev_sub)
+
+    # Convert first supported quarter into timestamp.
     # Example:
     # (2008, 1) -> 2008-01-01
     # (2008, 2) -> 2008-04-01
@@ -225,45 +241,36 @@ def extract_submissions_and_facts_delta(
         month=(int(first_quarter) - 1) * 3 + 1,
         day=1,
     ).to_datetime64()
-    
+
     logger.info(
-        f"Full-pipeline minimum supported period from read_periods: "
+        f"Delta minimum supported period from latest previous accepted date: "
         f"{min_supported_period}"
     )
-    
+
     logger.info(
         f"Previous submission period range: "
         f"{prev_sub['period'].min()} -> {prev_sub['period'].max()}"
     )
-    
+
     logger.info(
         "Bulk submission period range before filter: "
         f"{current_bulk_sub['period'].min()} -> "
         f"{current_bulk_sub['period'].max()}"
     )
-    
-    logger.info(
-        f"Bulk submissions before historical-universe filter: "
-        f"{len(current_bulk_sub)}"
-    )
-    
-    # Remove submissions older than the historical coverage of the
-    # Financial Statement Data Sets used by the full pipeline.
-    current_bulk_sub = current_bulk_sub[
-        current_bulk_sub["period"] >= min_supported_period
-    ].copy()
-    
+
+    logger.info(f"Bulk submissions before historical-universe filter: {len(current_bulk_sub)}")
+
+    # Remove submissions older than the delta lookback boundary.
+    current_bulk_sub = current_bulk_sub[current_bulk_sub["period"] >= min_supported_period].copy()
+
     logger.info(
         "Bulk submission period range after filter: "
         f"{current_bulk_sub['period'].min()} -> "
         f"{current_bulk_sub['period'].max()}"
     )
-    
-    logger.info(
-        f"Bulk submissions after historical-universe filter: "
-        f"{len(current_bulk_sub)}"
-    )
-    
+
+    logger.info(f"Bulk submissions after historical-universe filter: {len(current_bulk_sub)}")
+
     # 5) Find accession numbers not already present in historical facts or submissions.
     known_adsh = np.union1d(
         prev_df["adsh"].dropna().astype("int64").unique(),
