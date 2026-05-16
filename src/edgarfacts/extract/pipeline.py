@@ -207,24 +207,62 @@ def extract_submissions_and_facts_delta(
     current_bulk_sub = read_submissions_2(valid_ciks, fetcher, logger)
     logger.info(f"{len(current_bulk_sub)} current bulk submissions loaded")
 
-    min_prev_period = prev_sub["period"].min()
+    # Use the same historical coverage boundary as the full pipeline.
+    # Full mode only processes periods returned by read_periods(fetcher),
+    # therefore delta mode should ignore submissions older than the first
+    # available FSD period.
+    period_arr = read_periods(fetcher)
+    
+    first_year, first_quarter = period_arr[0]
+    
+    # Convert first supported FSD quarter into timestamp.
+    # Example:
+    # (2008, 1) -> 2008-01-01
+    # (2008, 2) -> 2008-04-01
+    min_supported_period = pd.Timestamp(
+        year=int(first_year),
+        month=(int(first_quarter) - 1) * 3 + 1,
+        day=1,
+    ).to_datetime64()
+    
     logger.info(
-        f"Previous submission period range: {min_prev_period} -> {prev_sub['period'].max()}"
+        f"Full-pipeline minimum supported period from read_periods: "
+        f"{min_supported_period}"
     )
+    
+    logger.info(
+        f"Previous submission period range: "
+        f"{prev_sub['period'].min()} -> {prev_sub['period'].max()}"
+    )
+    
     logger.info(
         "Bulk submission period range before filter: "
-        f"{current_bulk_sub['period'].min()} -> {current_bulk_sub['period'].max()}"
+        f"{current_bulk_sub['period'].min()} -> "
+        f"{current_bulk_sub['period'].max()}"
     )
-    logger.info(f"Bulk submissions before historical-universe filter: {len(current_bulk_sub)}")
-
-    current_bulk_sub = current_bulk_sub[current_bulk_sub["period"] >= min_prev_period].copy()
-
+    
+    logger.info(
+        f"Bulk submissions before historical-universe filter: "
+        f"{len(current_bulk_sub)}"
+    )
+    
+    # Remove submissions older than the historical coverage of the
+    # Financial Statement Data Sets used by the full pipeline.
+    current_bulk_sub = current_bulk_sub[
+        current_bulk_sub["period"] >= min_supported_period
+    ].copy()
+    
     logger.info(
         "Bulk submission period range after filter: "
-        f"{current_bulk_sub['period'].min()} -> {current_bulk_sub['period'].max()}"
+        f"{current_bulk_sub['period'].min()} -> "
+        f"{current_bulk_sub['period'].max()}"
     )
-    logger.info(f"Bulk submissions after historical-universe filter: {len(current_bulk_sub)}")
-
+    
+    logger.info(
+        f"Bulk submissions after historical-universe filter: "
+        f"{len(current_bulk_sub)}"
+    )
+    
     # 5) Find accession numbers not already present in historical facts or submissions.
     known_adsh = np.union1d(
         prev_df["adsh"].dropna().astype("int64").unique(),
