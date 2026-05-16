@@ -332,6 +332,7 @@ def extract_submissions_and_facts_delta(
     # Keep only submissions that actually have facts.
     valid_adsh = df["adsh"].unique()
     sub = sub[sub["adsh"].isin(valid_adsh)].copy()
+    sub['ticker'] = sub['ticker'].astype('category')
     
     logger.info(f"Final submissions count after fact filter: {len(sub)}")
     
