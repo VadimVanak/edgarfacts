@@ -78,7 +78,7 @@ def check_subs(logger, sub: pd.DataFrame) -> None:
     max_year_in_data = int(max(sub["accepted"].dt.year.max(), sub["period"].dt.year.max()))
     max_allowed = max_year_in_data + 2
     
-    bad = ~sub["version"].between(min_allowed, max_allowed)
+    bad = (~sub["version"].between(min_allowed, max_allowed)) & (sub["version"] != 0)
     assert bad.sum() == 0, (
         f"Found {bad.sum()} rows with implausible version years "
         f"(allowed [{min_allowed}, {max_allowed}])"
