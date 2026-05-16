@@ -327,9 +327,14 @@ def extract_submissions_and_facts_delta(
         logger.info("No new facts extracted for delta submissions")
         df = normalize_facts_dtypes(prev_df, tag_list)
 
-    logger.info(f"Final submissions count: {len(sub)}")
     logger.info(f"Final facts count: {len(df)}")
-
+    
+    # Keep only submissions that actually have facts.
+    valid_adsh = df["adsh"].unique()
+    sub = sub[sub["adsh"].isin(valid_adsh)].copy()
+    
+    logger.info(f"Final submissions count after fact filter: {len(sub)}")
+    
     return df.reset_index(drop=True), sub.reset_index(drop=True)
 
 
