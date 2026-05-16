@@ -126,6 +126,68 @@ def extract_submissions_and_facts_internal(fetcher: URLFetcher, logger, debug_mo
     return df, sub
 
 
+def _last_loaded_fsd_period(prev_sub: pd.DataFrame):
+    """Return the latest FSD zip period represented by an existing submissions frame.
+
+    Quarterly FSD archives are organized by the filing acceptance quarter, so the
+    already-loaded archive period is inferred from the latest non-null
+    ``accepted`` timestamp in ``prev_sub``.
+    """
+    if prev_sub.empty:
+        return None
+    if "accepted" not in prev_sub.columns:
+        raise ValueError("prev_sub must include an 'accepted' column")
+
+    accepted = pd.to_datetime(prev_sub["accepted"], errors="coerce").dropna()
+    if accepted.empty:
+        return None
+
+    latest_accepted = accepted.max()
+    return int(latest_accepted.year), int((latest_accepted.month - 1) // 3 + 1)
+
+
+def extract_fsd_submissions(
+    fetcher: URLFetcher,
+    logger,
+    debug_mode: bool = False,
+    prev_sub: pd.DataFrame = None,
+):
+    # 1) Tickers
+    tickers = read_tickers(fetcher)
+    logger.info(f"{len(tickers)} tickers loaded")
+
+    # 2) Periods
+    period_arr = read_periods(fetcher)
+    logger.info(f"Last available period is {period_arr[-1]}")
+
+    # DEBUG MODE (kept as in original script)
+    if debug_mode:
+        tickers = tickers.query("ticker=='msft' or ticker=='nvda'")
+        period_arr = period_arr[-2:]
+    # END DEBUG MODE
+
+    if prev_sub is not None:
+        last_loaded_period = _last_loaded_fsd_period(prev_sub)
+        if last_loaded_period is not None:
+            logger.info(f"Last previously loaded FSD period is {last_loaded_period}")
+            period_arr = [period for period in period_arr if period > last_loaded_period]
+
+        if not period_arr:
+            logger.info("No new FSD periods to load")
+            return prev_sub
+
+    # 3) Valid CIKs
+    valid_ciks = tickers.cik.unique()
+
+    # 4) Submissions from quarterly FSD zips
+    sub = read_submissions_parallel(period_arr, fetcher, valid_ciks, logger)
+
+    if prev_sub is not None:
+        sub = pd.concat((prev_sub, sub), ignore_index=True)
+
+    return sub
+
+
 def extract_submissions_and_facts(logger, debug_mode: bool = False):
     """
     Public pipeline entry point.

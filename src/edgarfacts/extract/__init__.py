@@ -13,6 +13,6 @@ The stable public entry point is:
 """
 
 # Re-export only the pipeline entry point for internal use
-from .pipeline import extract_submissions_and_facts
+from .pipeline import extract_fsd_submissions, extract_submissions_and_facts
 
-__all__ = ["extract_submissions_and_facts"]
+__all__ = ["extract_submissions_and_facts", "extract_fsd_submissions"]
