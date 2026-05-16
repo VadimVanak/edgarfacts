@@ -72,7 +72,7 @@ def check_subs(logger, sub: pd.DataFrame) -> None:
     )
 
     # Version plausibility checks (drift-resistant)
-    # assert (sub["version"] == 0).sum() == 0, "There are reports without versions"
+    assert (sub["version"] == 0).sum() == 0, "There are reports without versions"
     
     min_allowed = 2008
     max_year_in_data = int(max(sub["accepted"].dt.year.max(), sub["period"].dt.year.max()))
@@ -135,7 +135,7 @@ def check_subs(logger, sub: pd.DataFrame) -> None:
         "There are reports with future periods"
     )
 
-    # assert len(sub.query("version==0")) == 0, "There are reports without versions"
+    assert len(sub.query("version==0")) == 0, "There are reports without versions"
 
     logger.info("Submissions checks OK")
 
