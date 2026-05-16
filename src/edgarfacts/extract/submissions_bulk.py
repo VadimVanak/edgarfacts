@@ -16,6 +16,8 @@ Key responsibilities:
 from __future__ import annotations
 
 import re
+from contextlib import suppress
+from http.client import IncompleteRead
 from io import BytesIO
 from typing import List, Optional
 
@@ -125,6 +127,10 @@ def update_version_info(sub2: pd.DataFrame, fetcher: URLFetcher, logger) -> pd.D
     For each row in sub2, fetch the primary document and attempt to find "us-gaap/20YY"
     in a streaming manner. Produces a new column 'version' and drops 'file'.
 
+    Truncated or malformed HTTP response bodies are treated as best-effort:
+    any readable bytes are scanned, the response is closed, and extraction
+    continues with version 0 when no taxonomy version can be found.
+
     Returns
     -------
     pandas.DataFrame
@@ -138,30 +144,55 @@ def update_version_info(sub2: pd.DataFrame, fetcher: URLFetcher, logger) -> pd.D
         if index == 0 or index % 100 == 99:
             logger.info(f"Loading version info {index+1} of {len(sub2)}")
 
-        response = fetcher.fetch(
+        url = (
             f"https://www.sec.gov/Archives/edgar/data/"
-            f"{row['cik']}/{row['adsh']:018d}/{row['file']}",
-            ignore_exceptions=True,
+            f"{row['cik']}/{row['adsh']:018d}/{row['file']}"
         )
+        response = fetcher.fetch(url, ignore_exceptions=True)
         if response is None:
             continue
 
         version = 0
         previous_chunk = ""
-        while True:
-            chunk = response.read(4096).decode("utf-8")
-            if not chunk:
-                response.close()
-                break
+        try:
+            while True:
+                response_incomplete = False
+                try:
+                    raw_chunk = response.read(4096)
+                except IncompleteRead as e:
+                    raw_chunk = e.partial
+                    response_incomplete = True
+                    if logger is not None:
+                        logger.warning(
+                            f"Incomplete response while loading version info "
+                            f"for submission {row['adsh']} from {url}: {e}"
+                        )
 
-            combined_chunk = previous_chunk + chunk
-            match = re.search(r"us-gaap\/(20\d{2})", combined_chunk)
-            if match:
-                response.close()
-                version = int(match.group(1))
-                break
+                if not raw_chunk:
+                    break
 
-            previous_chunk = chunk
+                chunk = raw_chunk.decode("utf-8", errors="ignore")
+                combined_chunk = previous_chunk + chunk
+                match = re.search(r"us-gaap\/(20\d{2})", combined_chunk)
+                if match:
+                    version = int(match.group(1))
+                    break
+
+                previous_chunk = chunk
+
+                # An IncompleteRead means the server closed the chunked response
+                # early.  Scan its partial bytes, then stop reading this filing.
+                if response_incomplete:
+                    break
+        except Exception as e:
+            if logger is not None:
+                logger.warning(
+                    f"Unable to read response while loading version info for submission "
+                    f"{row['adsh']} from {url}: {e}"
+                )
+        finally:
+            with suppress(Exception):
+                response.close()
 
         sub2.loc[index, "version"] = version
 
@@ -208,8 +239,14 @@ def read_missing_submissions(
         if response is None:
             continue
 
-        d = decoder.decode(response.read())
-        response.close()
+        try:
+            d = decoder.decode(response.read())
+        except Exception:
+            continue
+        finally:
+            with suppress(Exception):
+                response.close()
+
         if d.filings is None:
             continue
         df_list.append(d.to_dataframe())
