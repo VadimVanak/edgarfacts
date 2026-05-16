@@ -195,6 +195,10 @@ def extract_submissions_and_facts_delta(
     # 2) Tags
     tag_list = read_tags(fetcher)
 
+    # Normalize previous data before comparing ADSH values and period bounds.
+    prev_df = normalize_facts_dtypes(prev_df, tag_list)
+    prev_sub = normalize_submission_dtypes(prev_sub)
+
     # 3) Valid CIKs
     valid_ciks = tickers.cik.unique()
 
@@ -202,6 +206,24 @@ def extract_submissions_and_facts_delta(
     # full companyfacts plus quarterly FSD loading.
     current_bulk_sub = read_submissions_2(valid_ciks, fetcher, logger)
     logger.info(f"{len(current_bulk_sub)} current bulk submissions loaded")
+
+    min_prev_period = prev_sub["period"].min()
+    logger.info(
+        f"Previous submission period range: {min_prev_period} -> {prev_sub['period'].max()}"
+    )
+    logger.info(
+        "Bulk submission period range before filter: "
+        f"{current_bulk_sub['period'].min()} -> {current_bulk_sub['period'].max()}"
+    )
+    logger.info(f"Bulk submissions before historical-universe filter: {len(current_bulk_sub)}")
+
+    current_bulk_sub = current_bulk_sub[current_bulk_sub["period"] >= min_prev_period].copy()
+
+    logger.info(
+        "Bulk submission period range after filter: "
+        f"{current_bulk_sub['period'].min()} -> {current_bulk_sub['period'].max()}"
+    )
+    logger.info(f"Bulk submissions after historical-universe filter: {len(current_bulk_sub)}")
 
     # 5) Find accession numbers not already present in historical facts or submissions.
     known_adsh = np.union1d(
