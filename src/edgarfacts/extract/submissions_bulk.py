@@ -26,7 +26,6 @@ import msgspec
 
 from edgarfacts.fetching import URLFetcher
 
-
 _ALLOWED_FORMS = ["10-Q", "10-K", "10-Q/A", "10-K/A"]
 _SUBMISSIONS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
 
@@ -34,6 +33,7 @@ _SUBMISSIONS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/
 # -----------------------------
 # msgspec structures (unchanged)
 # -----------------------------
+
 
 class Recent(msgspec.Struct):
     form: List[str] = []
@@ -77,6 +77,7 @@ class Submissions(msgspec.Struct):
 # -----------------------------
 # Public-ish helpers used by pipeline
 # -----------------------------
+
 
 def read_submissions_2(valid_ciks: np.ndarray, fetcher: URLFetcher, logger) -> pd.DataFrame:
     """
@@ -183,7 +184,9 @@ def set_amended_flag(sub: pd.DataFrame) -> pd.DataFrame:
     return sub
 
 
-def read_missing_submissions(missing_adsh: np.ndarray, fetcher: URLFetcher) -> Optional[pd.DataFrame]:
+def read_missing_submissions(
+    missing_adsh: np.ndarray, fetcher: URLFetcher
+) -> Optional[pd.DataFrame]:
     """
     Attempt to find missing submission metadata for a list of accession numbers (ADSH)
     by pulling JSON submissions for plausible CIKs.
@@ -245,6 +248,6 @@ def repair_version(sub: pd.DataFrame) -> pd.DataFrame:
     sub["version"] = sub.groupby("cik", as_index=False)["version"].ffill()
 
     sub.sort_values(by=["cik", "accepted"], ascending=[True, False], inplace=True)
-    sub["version"] = sub.groupby("cik", as_index=False)["version"].ffill().astype(int)
+    sub["version"] = sub.groupby("cik", as_index=False)["version"].ffill().fillna(0).astype(int)
 
     return sub
