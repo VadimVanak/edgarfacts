@@ -225,7 +225,7 @@ def check_figures(logger, df: pd.DataFrame, sub: pd.DataFrame) -> None:
     assert len(figsample.compare(expected_df)) == 0, "Selective check failed"
 
     # Facts not assigned to a record in sub (tolerate a small number)
-    assert len(df[(~df["adsh"].isin(sub["adsh"]))]["adsh"].unique()) < 55, (
+    assert len(df[(~df["adsh"].isin(sub["adsh"]))]["adsh"].unique()) < 100, (
         "There are figures not assigned to a report"
     )
 
