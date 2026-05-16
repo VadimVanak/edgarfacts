@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 from xml.etree import ElementTree
+from xml.etree.ElementTree import ParseError
 
 import numpy as np
 import pandas as pd
@@ -30,7 +31,21 @@ from edgarfacts.fetching import URLFetcher
 from edgarfacts.extract.tags import read_tags
 
 
-def get_submission_attrib(adsh: int, cik: int, fetcher: URLFetcher) -> Tuple[Optional[str], Optional[List[str]]]:
+def _parse_xml_response(resp, url: str, logger, adsh: int) -> Optional[ElementTree.Element]:
+    """Parse an XML response and log malformed downloads without aborting extraction."""
+    try:
+        return ElementTree.parse(resp).getroot()
+    except ParseError as e:
+        if logger is not None:
+            logger.warning(f"Skipping submission {adsh}: failed to parse XML from {url}: {e}")
+        return None
+    finally:
+        resp.close()
+
+
+def get_submission_attrib(
+    adsh: int, cik: int, fetcher: URLFetcher, logger=None
+) -> Tuple[Optional[str], Optional[List[str]]]:
     """
     Retrieve primary document filename and relevant taxonomy namespace URLs from FilingSummary.xml.
 
@@ -45,8 +60,9 @@ def get_submission_attrib(adsh: int, cik: int, fetcher: URLFetcher) -> Tuple[Opt
     if resp is None:
         return None, None
 
-    root = ElementTree.parse(resp).getroot()
-    resp.close()
+    root = _parse_xml_response(resp, url, logger, adsh)
+    if root is None:
+        return None, None
 
     file = None
     for f in root.findall("InputFiles/File"):
@@ -164,7 +180,7 @@ def read_missing_figures(
 
     for index, row in sub.iterrows():
         cik, adsh = int(row["cik"]), int(row["adsh"])
-        file, ns_list = get_submission_attrib(adsh, cik, fetcher)
+        file, ns_list = get_submission_attrib(adsh, cik, fetcher, logger)
 
         if file is None:
             logger.warning(f"No main submission file found for submission {adsh}")
@@ -178,8 +194,9 @@ def read_missing_figures(
         if resp is None:
             continue
 
-        root = ElementTree.parse(resp).getroot()
-        resp.close()
+        root = _parse_xml_response(resp, url, logger, adsh)
+        if root is None:
+            continue
 
         df = get_submission(root, cik, ns_list).assign(adsh=adsh)
         df_list.append(df)
