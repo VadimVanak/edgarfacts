@@ -161,7 +161,9 @@ class OutliersTests(unittest.TestCase):
         out = compute_value_adj(merged)
 
         self.assertIn("cik", merged.columns)
-        self.assertAlmostEqual(out.loc[out["tag"] == "Revenue", "value_adj"].iloc[0], 90.24725274725274)
+        self.assertAlmostEqual(
+            out.loc[out["tag"] == "Revenue", "value_adj"].iloc[0], 90.24725274725274
+        )
         self.assertEqual(out.loc[out["tag"] == "Cash", "value_adj"].iloc[0], 50.0)
 
     def test_remove_outliers_parallel_preserves_schema(self):
@@ -179,7 +181,7 @@ class OutliersTests(unittest.TestCase):
         out, n_out = remove_outliers_parallel(facts, sub, logger=_Logger(), use_process_pool=False)
 
         self.assertEqual(n_out, 0)
-        self.assertListEqual(list(out.columns), ["tag", "adsh", "start", "end", "value"])
+        self.assertListEqual(list(out.columns), list(facts.columns))
 
 
 class PeriodsTests(unittest.TestCase):
