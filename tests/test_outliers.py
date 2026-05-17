@@ -1,0 +1,138 @@
+import unittest
+
+import pandas as pd
+
+from edgarfacts.transforms.outliers import (
+    attach_cik,
+    build_outlier_dataset,
+    classify_outlier_multiplier,
+    compute_value_adj,
+    remove_outliers_parallel,
+)
+
+
+class _Logger:
+    def __init__(self):
+        self.messages = []
+
+    def info(self, msg):
+        self.messages.append(msg)
+
+
+def _scaled_error_facts():
+    return pd.DataFrame(
+        {
+            "adsh": [1, 2, 3, 4],
+            "tag": ["Revenue"] * 4,
+            "start": pd.to_datetime(["2020-01-01", "2020-04-01", "2020-07-01", "2020-10-01"]),
+            "end": pd.to_datetime(["2020-03-30", "2020-06-29", "2020-09-28", "2020-12-29"]),
+            "value": [100.0, 120.0, 120000.0, 120.0],
+        }
+    )
+
+
+class OutlierTests(unittest.TestCase):
+    def test_remove_outliers_parallel_preserves_schema_and_corrects_1e3(self):
+        facts = _scaled_error_facts()
+        sub = pd.DataFrame({"adsh": [1, 2, 3, 4], "cik": [10, 10, 10, 10]})
+
+        fixed, n_outliers = remove_outliers_parallel(facts, sub, _Logger(), use_process_pool=False)
+
+        self.assertListEqual(fixed.columns.tolist(), facts.columns.tolist())
+        self.assertGreaterEqual(n_outliers, 1)
+        self.assertEqual(float(fixed.loc[fixed["adsh"].eq(3), "value"].iloc[0]), 120.0)
+
+    def test_classify_outlier_multiplier_flags_without_mutating_value(self):
+        facts = _scaled_error_facts()
+        sub = pd.DataFrame({"adsh": [1, 2, 3, 4], "cik": [10, 10, 10, 10]})
+        features = compute_value_adj(attach_cik(facts, sub))
+        original = features["value"].copy()
+
+        mult = classify_outlier_multiplier(features)
+
+        self.assertEqual(float(mult.loc[features["adsh"].eq(3)].iloc[0]), 1e-3)
+        pd.testing.assert_series_equal(features["value"], original)
+
+    def test_build_outlier_dataset_two_versions_duplicates_and_parent_schema(self):
+        facts = pd.DataFrame(
+            {
+                "adsh": [1, 1, 2, 3, 4, 5],
+                "tag": ["Revenue", "Revenue", "Assets", "Revenue", "Revenue", "Assets"],
+                "start": pd.to_datetime(
+                    [
+                        "2020-01-01",
+                        "2020-01-01",
+                        "2020-01-01",
+                        "2020-04-01",
+                        "2021-01-01",
+                        "2021-01-01",
+                    ]
+                ),
+                "end": pd.to_datetime(
+                    [
+                        "2020-03-30",
+                        "2020-03-30",
+                        "2020-03-30",
+                        "2020-06-29",
+                        "2021-03-30",
+                        "2021-03-30",
+                    ]
+                ),
+                "value": [100.0, 101.0, 1000.0, 110.0, 120000.0, 2000.0],
+            }
+        )
+        submissions = pd.DataFrame(
+            {
+                "adsh": [1, 2, 3, 4, 5],
+                "cik": [10, 10, 10, 20, 20],
+                "version": ["v1", "v1", "v1", "v2", "v2"],
+                "accepted": pd.to_datetime(["2021-01-01"] * 5),
+                "sic": ["1234"] * 5,
+                "form": ["10-K", "10-K", "10-Q", "10-K/A", "10-K"],
+            }
+        )
+        arcs = pd.DataFrame(
+            {
+                "version": ["v1"],
+                "statement": ["IS"],
+                "seq": [1],
+                "from": ["Assets"],
+                "to": ["Revenue"],
+                "weight": [1.0],
+            }
+        )
+
+        out = build_outlier_dataset(facts, submissions, arcs, _Logger())
+
+        self.assertSetEqual(set(out["version"].astype(str).unique()), {"v1", "v2"})
+        self.assertIn("outlier_multiplier", out.columns)
+        for col in ["parent1_value", "parent1_weight", "parent1_frequency", "parent2_value"]:
+            self.assertIn(col, out.columns)
+        dup = out[(out["adsh"].eq(1)) & (out["tag"].astype(str).eq("Revenue"))]
+        self.assertTrue((dup["duplicate_value_count"] == 2).all())
+        self.assertTrue((dup["duplicate_unique_value_count"] == 2).all())
+        self.assertTrue(dup["duplicate_majority_value"].isna().all())
+
+    def test_build_outlier_dataset_empty_arcs_keeps_parent_columns(self):
+        facts = pd.DataFrame(
+            {
+                "adsh": [1],
+                "tag": ["Revenue"],
+                "start": pd.to_datetime(["2020-01-01"]),
+                "end": pd.to_datetime(["2020-03-30"]),
+                "value": [100.0],
+            }
+        )
+        submissions = pd.DataFrame({"adsh": [1], "cik": [10], "version": ["v1"]})
+        arcs = pd.DataFrame(columns=["version", "statement", "seq", "from", "to", "weight"])
+
+        out = build_outlier_dataset(facts, submissions, arcs, _Logger())
+
+        self.assertIn("parent1_value", out.columns)
+        self.assertIn("parent2_value", out.columns)
+        self.assertTrue(out["parent1_value"].isna().all())
+        self.assertTrue(out["parent2_value"].isna().all())
+
+
+if __name__ == "__main__":
+    unittest.main()
