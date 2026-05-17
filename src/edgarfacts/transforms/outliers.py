@@ -429,21 +429,97 @@ def _add_tag_stats(df: pd.DataFrame, min_abs_for_log: float) -> None:
 
 
 def _add_submission_stats(df: pd.DataFrame) -> None:
-    grp = df.groupby("adsh", observed=True)
-    df["submission_size"] = grp["value"].transform("size").astype("int32")
-    df["submission_median_log10"] = grp["abs_value_log10"].transform("median").astype("float32")
-    df["submission_mad_log10"] = grp["abs_value_log10"].transform(_mad).astype("float32")
-    df["submission_q25_log10"] = (
-        grp["abs_value_log10"].transform(lambda s: s.quantile(0.25)).astype("float32")
-    )
-    df["submission_q75_log10"] = (
-        grp["abs_value_log10"].transform(lambda s: s.quantile(0.75)).astype("float32")
-    )
-    df["submission_majority_scale"] = (
+    """
+    Add submission-level statistics using approximate q25/q75 from median and MAD.
+
+    Approximation:
+        q25 ≈ median - 0.6745 * MAD
+        q75 ≈ median + 0.6745 * MAD
+
+    Mutates df in place.
+    """
+    grp = df.groupby("adsh", observed=True, sort=False)
+
+    stats = (
         grp["abs_value_log10"]
-        .transform(lambda s: s.round().mode().iloc[0] if not s.dropna().empty else np.nan)
-        .astype("float32")
+        .agg(
+            submission_median_log10="median",
+            submission_mad_log10=_mad,
+        )
+        .reset_index()
     )
+
+    size = (
+        grp["value"]
+        .size()
+        .rename("submission_size")
+        .reset_index()
+    )
+
+    stats = stats.merge(size, on="adsh", how="left", copy=False)
+
+    stats["submission_q25_log10"] = (
+        stats["submission_median_log10"] - 0.6745 * stats["submission_mad_log10"]
+    )
+    stats["submission_q75_log10"] = (
+        stats["submission_median_log10"] + 0.6745 * stats["submission_mad_log10"]
+    )
+
+    # Majority rounded log10 scale per submission.
+    scale = df[["adsh", "abs_value_log10"]].copy()
+    scale["_scale"] = scale["abs_value_log10"].round().astype("float32")
+    scale = scale.dropna(subset=["_scale"])
+
+    if scale.empty:
+        stats["submission_majority_scale"] = np.nan
+    else:
+        scale_counts = (
+            scale.groupby(["adsh", "_scale"], observed=True, sort=False)
+            .size()
+            .rename("_n")
+            .reset_index()
+        )
+
+        majority_scale = (
+            scale_counts.sort_values(
+                ["adsh", "_n", "_scale"],
+                ascending=[True, False, True],
+                kind="mergesort",
+            )
+            .drop_duplicates("adsh")
+            [["adsh", "_scale"]]
+            .rename(columns={"_scale": "submission_majority_scale"})
+        )
+
+        stats = stats.merge(majority_scale, on="adsh", how="left", copy=False)
+
+        del scale_counts, majority_scale
+
+    stats["submission_size"] = stats["submission_size"].astype("int32")
+
+    for col in [
+        "submission_median_log10",
+        "submission_mad_log10",
+        "submission_q25_log10",
+        "submission_q75_log10",
+        "submission_majority_scale",
+    ]:
+        stats[col] = pd.to_numeric(stats[col], errors="coerce").astype("float32")
+
+    merged = df[["adsh"]].merge(stats, on="adsh", how="left", copy=False)
+
+    for col in [
+        "submission_size",
+        "submission_median_log10",
+        "submission_mad_log10",
+        "submission_q25_log10",
+        "submission_q75_log10",
+        "submission_majority_scale",
+    ]:
+        df[col] = merged[col].to_numpy()
+
+    del grp, stats, size, scale, merged
+    gc.collect()
 
 
 def _add_prev_next_rolling_stats(df: pd.DataFrame, rolling_window: int) -> None:
