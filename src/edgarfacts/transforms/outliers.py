@@ -162,7 +162,7 @@ def build_outlier_dataset(
             f"submissions={len(sub_v)} arcs={len(arcs_v)} facts={len(facts_v)}",
         )
 
-        out_v = _build_outlier_dataset_one_version(
+        out_v = _build_outlier_dataset_one_chunk(
             facts_v,
             sub_v,
             arcs_v,
@@ -332,7 +332,7 @@ def _classify_pairwise_scale_matches(df2: pd.DataFrame) -> pd.Series:
 # ---------------------------------------------------------------------
 
 
-def _build_outlier_dataset_one_version(
+def _build_outlier_dataset_one_chunk(
     facts: pd.DataFrame,
     submissions: pd.DataFrame,
     arcs: pd.DataFrame,
@@ -342,7 +342,7 @@ def _build_outlier_dataset_one_version(
     rolling_window: int,
     min_abs_for_log: float,
 ) -> pd.DataFrame:
-    """Build features for one taxonomy/submission version chunk."""
+    """Build features for one version chunk, which may contain one or more taxonomy versions."""
     base = attach_cik(facts, submissions)
     base["start"] = pd.to_datetime(base["start"]).astype(config.DATETIME_DTYPE)
     base["end"] = pd.to_datetime(base["end"]).astype(config.DATETIME_DTYPE)
@@ -654,7 +654,16 @@ def _mad(s: pd.Series) -> float:
 def _version_label(submissions: pd.DataFrame):
     if "version" not in submissions.columns or submissions.empty:
         return "<unknown>"
-    return submissions["version"].iloc[0]
+
+    versions = sorted(pd.Series(submissions["version"].dropna().unique()).tolist())
+
+    if not versions:
+        return "<unknown>"
+
+    if len(versions) == 1:
+        return versions[0]
+
+    return versions
 
 
 def _log(logger, message: str) -> None:
