@@ -129,6 +129,7 @@ def build_outlier_dataset(
     overlap_window: int = 3,
     rolling_window: int = 9,
     min_abs_for_log: float = 1e-12,
+    max_records: int = 1,
 ) -> pd.DataFrame:
     """Build an extended feature frame for manual/ML-assisted outlier review."""
     _log(logger, "starting build_outlier_dataset")
@@ -136,14 +137,20 @@ def build_outlier_dataset(
         raise KeyError("submissions must include a 'version' column")
 
     versions = list(pd.Series(submissions["version"].dropna().unique()).sort_values())
+    version_groups = _group_versions_by_record_count(facts, submissions, versions, max_records)
     _log(logger, f"build_outlier_dataset processing {len(versions)} versions: {versions}")
+    _log(
+        logger,
+        f"build_outlier_dataset split versions into {len(version_groups)} groups "
+        f"with max_records={max_records}: {version_groups}",
+    )
 
     results: list[pd.DataFrame] = []
-    for version in versions:
-        _log(logger, f"starting outlier dataset version={version}")
-        sub_v = submissions.loc[submissions["version"] == version].copy()
+    for group_idx, version_group in enumerate(version_groups, start=1):
+        _log(logger, f"starting outlier dataset version_group={version_group}")
+        sub_v = submissions.loc[submissions["version"].isin(version_group)].copy()
         arcs_v = (
-            arcs.loc[arcs["version"] == version].copy()
+            arcs.loc[arcs["version"].isin(version_group)].copy()
             if "version" in arcs.columns
             else arcs.iloc[0:0].copy()
         )
@@ -151,7 +158,8 @@ def build_outlier_dataset(
         facts_v = facts.loc[facts["adsh"].isin(adsh)].copy()
         _log(
             logger,
-            f"version={version}: submissions={len(sub_v)} arcs={len(arcs_v)} facts={len(facts_v)}",
+            f"version_group={group_idx}/{len(version_groups)} {version_group}: "
+            f"submissions={len(sub_v)} arcs={len(arcs_v)} facts={len(facts_v)}",
         )
 
         out_v = _build_outlier_dataset_one_version(
@@ -166,9 +174,12 @@ def build_outlier_dataset(
         out_v["outlier_multiplier"] = classify_outlier_multiplier(out_v, logger=logger).astype(
             "float64"
         )
-        _log(logger, f"version={version}: after initial classification shape={out_v.shape}")
+        _log(
+            logger,
+            f"version_group={version_group}: after initial classification shape={out_v.shape}",
+        )
         results.append(out_v)
-        _log(logger, f"finished outlier dataset version={version} shape={out_v.shape}")
+        _log(logger, f"finished outlier dataset version_group={version_group} shape={out_v.shape}")
 
         del sub_v, arcs_v, adsh, facts_v, out_v
         gc.collect()
@@ -179,6 +190,50 @@ def build_outlier_dataset(
         combined = _empty_outlier_dataset_frame()
     _log(logger, f"finished build_outlier_dataset combined shape={combined.shape}")
     return combined
+
+
+def _group_versions_by_record_count(
+    facts: pd.DataFrame,
+    submissions: pd.DataFrame,
+    versions: list,
+    max_records: int,
+) -> list[list]:
+    """Group sorted versions so each chunk has at most max_records fact rows when possible."""
+    if max_records < 1:
+        raise ValueError("max_records must be at least 1")
+
+    record_counts = (
+        facts[["adsh"]]
+        .merge(submissions[["adsh", "version"]], how="inner", on="adsh")
+        .groupby("version", observed=True)
+        .size()
+        .reindex(versions, fill_value=0)
+    )
+
+    groups: list[list] = []
+    current_group: list = []
+    current_records = 0
+    for version, n_records in record_counts.items():
+        n_records = int(n_records)
+        if n_records > max_records:
+            if current_group:
+                groups.append(current_group)
+                current_group = []
+                current_records = 0
+            groups.append([version])
+            continue
+
+        if current_group and current_records + n_records > max_records:
+            groups.append(current_group)
+            current_group = []
+            current_records = 0
+
+        current_group.append(version)
+        current_records += n_records
+
+    if current_group:
+        groups.append(current_group)
+    return groups
 
 
 # ---------------------------------------------------------------------

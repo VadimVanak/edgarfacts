@@ -113,6 +113,62 @@ class OutlierTests(unittest.TestCase):
         self.assertTrue((dup["duplicate_unique_value_count"] == 2).all())
         self.assertTrue(dup["duplicate_majority_value"].isna().all())
 
+    def test_build_outlier_dataset_groups_versions_up_to_max_records(self):
+        facts = pd.DataFrame(
+            {
+                "adsh": [1, 2, 3],
+                "tag": ["Revenue", "Revenue", "Revenue"],
+                "start": pd.to_datetime(["2020-01-01", "2020-04-01", "2020-07-01"]),
+                "end": pd.to_datetime(["2020-03-30", "2020-06-29", "2020-09-28"]),
+                "value": [100.0, 110.0, 120.0],
+            }
+        )
+        submissions = pd.DataFrame(
+            {
+                "adsh": [1, 2, 3],
+                "cik": [10, 10, 10],
+                "version": ["v1", "v2", "v3"],
+            }
+        )
+        arcs = pd.DataFrame(columns=["version", "statement", "seq", "from", "to", "weight"])
+
+        out = build_outlier_dataset(facts, submissions, arcs, _Logger(), max_records=2)
+
+        first_group = out[out["version"].astype(str).isin(["v1", "v2"])]
+        second_group = out[out["version"].astype(str).eq("v3")]
+        self.assertTrue((first_group["tag_occurrence_count"] == 2).all())
+        self.assertTrue((second_group["tag_occurrence_count"] == 1).all())
+
+    def test_build_outlier_dataset_keeps_oversized_version_as_own_group(self):
+        facts = pd.DataFrame(
+            {
+                "adsh": [1, 1, 2],
+                "tag": ["Revenue", "Assets", "Revenue"],
+                "start": pd.to_datetime(["2020-01-01"] * 3),
+                "end": pd.to_datetime(["2020-03-30"] * 3),
+                "value": [100.0, 1000.0, 110.0],
+            }
+        )
+        submissions = pd.DataFrame(
+            {
+                "adsh": [1, 2],
+                "cik": [10, 10],
+                "version": ["v1", "v2"],
+            }
+        )
+        arcs = pd.DataFrame(columns=["version", "statement", "seq", "from", "to", "weight"])
+
+        out = build_outlier_dataset(facts, submissions, arcs, _Logger(), max_records=1)
+
+        v1_revenue = out[
+            (out["version"].astype(str).eq("v1")) & (out["tag"].astype(str).eq("Revenue"))
+        ]
+        v2_revenue = out[
+            (out["version"].astype(str).eq("v2")) & (out["tag"].astype(str).eq("Revenue"))
+        ]
+        self.assertTrue((v1_revenue["tag_occurrence_count"] == 1).all())
+        self.assertTrue((v2_revenue["tag_occurrence_count"] == 1).all())
+
     def test_build_outlier_dataset_empty_arcs_keeps_parent_columns(self):
         facts = pd.DataFrame(
             {
