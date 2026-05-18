@@ -76,9 +76,18 @@ def classify_outlier_multiplier(
     *,
     logger=None,
     default_class: float = 1.0,
+    cik_bundle_size: int = 100,
 ) -> pd.Series:
-    """Return an index-aligned initial scale-error multiplier without mutating values."""
+    """
+    Return an index-aligned initial scale-error multiplier without mutating values.
+
+    Uses bundled CIK processing to reduce memory versus full-frame pairwise join,
+    while avoiding the overhead of one join per CIK.
+    """
     _log(logger, f"classifying outlier multipliers for {len(features):,} rows")
+
+    if cik_bundle_size < 1:
+        raise ValueError("cik_bundle_size must be at least 1")
 
     if features.empty:
         return pd.Series(
@@ -103,12 +112,23 @@ def classify_outlier_multiplier(
     work = features[["cik", "tag", "end", "value", "value_adj"]].copy()
     work["_orig_index"] = features.index
 
-    for i, (_, g) in enumerate(work.groupby("cik", observed=True, sort=False)):
-        if logger is not None and i % 100 == 0:
-            logger.info(f"classifying outlier multipliers: CIK group #{i:,}")
+    ciks = pd.Series(work["cik"].dropna().unique()).sort_values().to_numpy()
+    n_bundles = int(np.ceil(len(ciks) / cik_bundle_size))
 
-        cls = _classify_outlier_multiplier_one_cik(
-            g,
+    for bundle_idx, start in enumerate(range(0, len(ciks), cik_bundle_size), start=1):
+        cik_bundle = ciks[start : start + cik_bundle_size]
+
+        if logger is not None:
+            logger.info(
+                f"classifying outlier multipliers: "
+                f"CIK bundle {bundle_idx:,}/{n_bundles:,}, "
+                f"ciks={len(cik_bundle):,}"
+            )
+
+        bundle = work.loc[work["cik"].isin(cik_bundle)]
+
+        cls = _classify_outlier_multiplier_one_bundle(
+            bundle,
             default_class=default_class,
         )
 
@@ -116,12 +136,12 @@ def classify_outlier_multiplier(
         if mask.any():
             out.loc[cls.index[mask]] = cls.loc[mask].to_numpy(dtype="float64")
 
-        del g, cls, mask
+        del cik_bundle, bundle, cls, mask
         gc.collect()
 
     _log(
         logger,
-        f"classified {(out != default_class).sum():,} candidate outliers",
+        f"classified {int((out != default_class).sum()):,} candidate outliers",
     )
 
     del work
@@ -130,15 +150,16 @@ def classify_outlier_multiplier(
     return out
 
 
-def _classify_outlier_multiplier_one_cik(
+def _classify_outlier_multiplier_one_bundle(
     df: pd.DataFrame,
     *,
     default_class: float = 1.0,
 ) -> pd.Series:
     """
-    Classify one CIK group using legacy pairwise scale-error logic.
+    Classify one bundle of CIKs using legacy pairwise scale-error logic.
 
-    Returns Series indexed by original feature index.
+    Comparisons remain restricted to same (cik, tag), so bundling CIKs does
+    not change the classification logic.
     """
     result = pd.Series(
         float(default_class),
