@@ -78,10 +78,14 @@ def classify_outlier_multiplier(
     default_class: float = 1.0,
 ) -> pd.Series:
     """Return an index-aligned initial scale-error multiplier without mutating values."""
-    _log(logger, f"classifying outlier multipliers for {len(features)} rows")
+    _log(logger, f"classifying outlier multipliers for {len(features):,} rows")
+
     if features.empty:
         return pd.Series(
-            default_class, index=features.index, dtype="float64", name="outlier_multiplier"
+            default_class,
+            index=features.index,
+            dtype="float64",
+            name="outlier_multiplier",
         )
 
     required = {"cik", "tag", "end", "value", "value_adj"}
@@ -89,35 +93,115 @@ def classify_outlier_multiplier(
     if missing:
         raise KeyError(f"features missing required columns: {sorted(missing)}")
 
+    out = pd.Series(
+        float(default_class),
+        index=features.index,
+        dtype="float64",
+        name="outlier_multiplier",
+    )
+
     work = features[["cik", "tag", "end", "value", "value_adj"]].copy()
-    work["_row_id"] = np.arange(len(work), dtype=np.int64)
+    work["_orig_index"] = features.index
+
+    for i, (_, g) in enumerate(work.groupby("cik", observed=True, sort=False)):
+        if logger is not None and i % 100 == 0:
+            logger.info(f"classifying outlier multipliers: CIK group #{i:,}")
+
+        cls = _classify_outlier_multiplier_one_cik(
+            g,
+            default_class=default_class,
+        )
+
+        mask = cls.ne(default_class)
+        if mask.any():
+            out.loc[cls.index[mask]] = cls.loc[mask].to_numpy(dtype="float64")
+
+        del g, cls, mask
+        gc.collect()
+
+    _log(
+        logger,
+        f"classified {(out != default_class).sum():,} candidate outliers",
+    )
+
+    del work
+    gc.collect()
+
+    return out
+
+
+def _classify_outlier_multiplier_one_cik(
+    df: pd.DataFrame,
+    *,
+    default_class: float = 1.0,
+) -> pd.Series:
+    """
+    Classify one CIK group using legacy pairwise scale-error logic.
+
+    Returns Series indexed by original feature index.
+    """
+    result = pd.Series(
+        float(default_class),
+        index=df["_orig_index"].to_numpy(),
+        dtype="float64",
+        name="outlier_multiplier",
+    )
+
+    if len(df) <= 1:
+        return result
 
     med = (
-        work.groupby(["cik", "tag"], observed=True, as_index=False)["value_adj"]
+        df.groupby(["cik", "tag"], observed=True, as_index=False)["value_adj"]
         .median()
         .rename(columns={"value_adj": "median"})
     )
-    left = work.merge(med, how="left", on=["cik", "tag"])
+
+    left = df.merge(med, how="left", on=["cik", "tag"], copy=False)
+
+    del med
+    gc.collect()
+
     pairs = left.merge(
-        work[["tag", "cik", "end", "value_adj"]],
+        df[["tag", "cik", "end", "value_adj"]],
         on=["cik", "tag"],
         suffixes=["", "_y"],
+        copy=False,
     )
+
+    del left
+    gc.collect()
+
     pairs = pairs[np.abs((pairs["end_y"] - pairs["end"]).dt.days) <= 120]
+
+    if pairs.empty:
+        return result
+
     pair_mult = _classify_pairwise_scale_matches(pairs)
+    mask = pair_mult.ne(default_class)
 
-    classified = pairs.loc[pair_mult != 1.0, ["_row_id"]].copy()
-    classified["_priority"] = pair_mult[pair_mult != 1.0].map(_OUTLIER_MULTIPLIER_PRIORITY)
-    classified["outlier_multiplier"] = pair_mult[pair_mult != 1.0].to_numpy(dtype="float64")
+    if not mask.any():
+        del pairs, pair_mult, mask
+        gc.collect()
+        return result
 
-    out = np.full(len(work), float(default_class), dtype="float64")
-    if not classified.empty:
-        best = classified.sort_values(["_row_id", "_priority"]).drop_duplicates("_row_id")
-        out[best["_row_id"].to_numpy(dtype=np.int64)] = best["outlier_multiplier"].to_numpy(
-            dtype="float64"
-        )
+    classified = pairs.loc[mask, ["_orig_index"]].copy()
+    classified["_priority"] = pair_mult.loc[mask].map(_OUTLIER_MULTIPLIER_PRIORITY)
+    classified["outlier_multiplier"] = pair_mult.loc[mask].to_numpy(dtype="float64")
 
-    return pd.Series(out, index=features.index, name="outlier_multiplier")
+    best = (
+        classified
+        .sort_values(["_orig_index", "_priority"], kind="mergesort")
+        .drop_duplicates("_orig_index")
+    )
+
+    result.loc[best["_orig_index"].to_numpy()] = best["outlier_multiplier"].to_numpy(
+        dtype="float64"
+    )
+
+    del pairs, pair_mult, mask, classified, best
+    gc.collect()
+
+    return result
 
 
 def build_outlier_dataset(
