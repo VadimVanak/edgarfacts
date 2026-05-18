@@ -686,54 +686,99 @@ def _add_duplicate_features(df: pd.DataFrame) -> None:
 
 
 def _add_best_overlap_value(df: pd.DataFrame, *, overlap_window: int) -> None:
-    """Add nearest overlapping cik/tag value by scanning only neighboring rows."""
-    n = len(df)
-    best_values = np.full(n, np.nan, dtype="float64")
-    best_fracs = np.zeros(n, dtype="float32")
-    if n == 0:
-        df["best_overlap_value"] = best_values
-        df["best_overlap_fraction"] = best_fracs
+    """
+    Fast approximate best-overlap value using vectorized offset comparisons.
+
+    Avoids:
+    - groupby loops
+    - nested Python loops
+    - MultiIndex factorization
+
+    Mutates df in place.
+    """
+    if df.empty:
+        df["best_overlap_value"] = np.nan
+        df["best_overlap_fraction"] = np.float32(0.0)
         return
 
-    ordered = df.reset_index(drop=False).sort_values(
-        ["cik", "tag", "start", "end", "adsh"], kind="mergesort"
-    )
-    index_pos = {idx: pos for pos, idx in enumerate(df.index)}
+    ordered = df.sort_values(["cik", "tag", "start", "end", "adsh"], kind="mergesort")
 
-    for _, group in ordered.groupby(["cik", "tag"], observed=True, sort=False):
-        starts = group["start"].to_numpy(dtype="datetime64[D]")
-        ends = group["end"].to_numpy(dtype="datetime64[D]")
-        values = group["value"].to_numpy(dtype="float64")
-        orig_indexes = group["index"].to_numpy()
-        m = len(group)
-        for j in range(m):
-            best_frac = 0.0
-            best_value = np.nan
-            lo = max(0, j - overlap_window)
-            hi = min(m, j + overlap_window + 1)
-            for k in range(lo, hi):
-                if k == j:
-                    continue
-                overlap = (
-                    (min(ends[j], ends[k]) - max(starts[j], starts[k]))
-                    .astype("timedelta64[D]")
-                    .astype(int)
-                )
-                if overlap < 0:
-                    continue
-                dur_j = max((ends[j] - starts[j]).astype("timedelta64[D]").astype(int), 1)
-                dur_k = max((ends[k] - starts[k]).astype("timedelta64[D]").astype(int), 1)
-                frac = float(overlap + 1) / float(max(min(dur_j, dur_k) + 1, 1))
-                if frac > best_frac:
-                    best_frac = frac
-                    best_value = values[k]
-            pos = index_pos[orig_indexes[j]]
-            best_fracs[pos] = best_frac
-            best_values[pos] = best_value
+    n = len(ordered)
 
-    df["best_overlap_value"] = best_values
-    df["best_overlap_fraction"] = best_fracs
+    best_value = np.full(n, np.nan, dtype="float64")
+    best_frac = np.zeros(n, dtype="float32")
 
+    starts = ordered["start"].to_numpy(dtype="datetime64[D]")
+    ends = ordered["end"].to_numpy(dtype="datetime64[D]")
+    values = ordered["value"].to_numpy(dtype="float64")
+
+    cik = ordered["cik"].to_numpy()
+    tag_codes = pd.factorize(ordered["tag"], sort=False)[0].astype("int32")
+
+    dur = (ends - starts).astype("timedelta64[D]").astype("int32")
+    dur = np.maximum(dur, 0)
+
+    for k in range(1, overlap_window + 1):
+        same_group = (cik[:-k] == cik[k:]) & (tag_codes[:-k] == tag_codes[k:])
+
+        if not same_group.any():
+            continue
+
+        left_idx = np.nonzero(same_group)[0]
+        right_idx = left_idx + k
+
+        overlap_start = np.maximum(starts[left_idx], starts[right_idx])
+        overlap_end = np.minimum(ends[left_idx], ends[right_idx])
+
+        overlap_days = (
+            (overlap_end - overlap_start)
+            .astype("timedelta64[D]")
+            .astype("int32")
+            + 1
+        )
+        overlap_days = np.maximum(overlap_days, 0)
+
+        denom = np.minimum(
+            np.maximum(dur[left_idx] + 1, 1),
+            np.maximum(dur[right_idx] + 1, 1),
+        )
+
+        frac = (overlap_days / denom).astype("float32")
+
+        # left -> right update
+        better_left = frac > best_frac[left_idx]
+        if better_left.any():
+            upd = left_idx[better_left]
+            src = right_idx[better_left]
+            best_frac[upd] = frac[better_left]
+            best_value[upd] = values[src]
+
+        # right -> left update
+        better_right = frac > best_frac[right_idx]
+        if better_right.any():
+            upd = right_idx[better_right]
+            src = left_idx[better_right]
+            best_frac[upd] = frac[better_right]
+            best_value[upd] = values[src]
+
+        del same_group, left_idx, right_idx, overlap_start, overlap_end
+        del overlap_days, denom, frac
+        gc.collect()
+
+    result = pd.DataFrame(
+        {
+            "_orig_index": ordered.index.to_numpy(),
+            "best_overlap_value": best_value,
+            "best_overlap_fraction": best_frac,
+        }
+    ).set_index("_orig_index")
+
+    df["best_overlap_value"] = result.loc[df.index, "best_overlap_value"].to_numpy(dtype="float64")
+    df["best_overlap_fraction"] = result.loc[df.index, "best_overlap_fraction"].to_numpy(dtype="float32")
+
+    del ordered, result, best_value, best_frac, starts, ends, values, cik, tag_codes, dur
+    gc.collect()
+    
 
 def _build_top_parent_map(arcs: pd.DataFrame) -> pd.DataFrame:
     """Return top two most frequent parent tags for each (version, child tag)."""
