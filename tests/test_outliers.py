@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -102,7 +104,9 @@ class OutlierTests(unittest.TestCase):
             }
         )
 
-        out = build_outlier_dataset(facts, submissions, arcs, _Logger())
+        with TemporaryDirectory() as td:
+            paths = build_outlier_dataset(facts, submissions, arcs, _Logger(), target_path=td)
+            out = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
         self.assertSetEqual(set(out["version"].astype(str).unique()), {"v1", "v2"})
         self.assertIn("outlier_multiplier", out.columns)
@@ -132,7 +136,11 @@ class OutlierTests(unittest.TestCase):
         )
         arcs = pd.DataFrame(columns=["version", "statement", "seq", "from", "to", "weight"])
 
-        out = build_outlier_dataset(facts, submissions, arcs, _Logger(), max_records=2)
+        with TemporaryDirectory() as td:
+            paths = build_outlier_dataset(
+                facts, submissions, arcs, _Logger(), max_records=2, target_path=td
+            )
+            out = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
         first_group = out[out["version"].astype(str).isin(["v1", "v2"])]
         second_group = out[out["version"].astype(str).eq("v3")]
@@ -158,7 +166,11 @@ class OutlierTests(unittest.TestCase):
         )
         arcs = pd.DataFrame(columns=["version", "statement", "seq", "from", "to", "weight"])
 
-        out = build_outlier_dataset(facts, submissions, arcs, _Logger(), max_records=1)
+        with TemporaryDirectory() as td:
+            paths = build_outlier_dataset(
+                facts, submissions, arcs, _Logger(), max_records=1, target_path=td
+            )
+            out = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
         v1_revenue = out[
             (out["version"].astype(str).eq("v1")) & (out["tag"].astype(str).eq("Revenue"))
@@ -182,12 +194,34 @@ class OutlierTests(unittest.TestCase):
         submissions = pd.DataFrame({"adsh": [1], "cik": [10], "version": ["v1"]})
         arcs = pd.DataFrame(columns=["version", "statement", "seq", "from", "to", "weight"])
 
-        out = build_outlier_dataset(facts, submissions, arcs, _Logger())
+        with TemporaryDirectory() as td:
+            paths = build_outlier_dataset(facts, submissions, arcs, _Logger(), target_path=td)
+            out = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
         self.assertIn("parent1_value", out.columns)
         self.assertIn("parent2_value", out.columns)
         self.assertTrue(out["parent1_value"].isna().all())
         self.assertTrue(out["parent2_value"].isna().all())
+
+    def test_build_outlier_dataset_saves_chunk_files(self):
+        facts = pd.DataFrame(
+            {
+                "adsh": [1, 2],
+                "tag": ["Revenue", "Revenue"],
+                "start": pd.to_datetime(["2020-01-01", "2020-04-01"]),
+                "end": pd.to_datetime(["2020-03-30", "2020-06-29"]),
+                "value": [100.0, 110.0],
+            }
+        )
+        submissions = pd.DataFrame({"adsh": [1, 2], "cik": [10, 10], "version": ["v1", "v2"]})
+        arcs = pd.DataFrame(columns=["version", "statement", "seq", "from", "to", "weight"])
+
+        with TemporaryDirectory() as td:
+            paths = build_outlier_dataset(
+                facts, submissions, arcs, _Logger(), max_records=1, target_path=td
+            )
+            self.assertEqual(len(paths), 2)
+            self.assertTrue(all(Path(p).exists() for p in paths))
 
 
 if __name__ == "__main__":
