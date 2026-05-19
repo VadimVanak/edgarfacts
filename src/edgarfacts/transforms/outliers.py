@@ -9,6 +9,7 @@ API exposes non-mutating signals for manual or ML-assisted outlier review.
 from __future__ import annotations
 
 import gc
+from pathlib import Path
 from functools import partial
 from multiprocessing.pool import Pool
 from typing import Optional, Tuple
@@ -235,7 +236,8 @@ def build_outlier_dataset(
     rolling_window: int = 9,
     min_abs_for_log: float = 1e-12,
     max_records: int = 1,
-) -> pd.DataFrame:
+    target_path: str | Path = "data/outlier_dataset_chunks",
+) -> list[Path]:
     """Build an extended feature frame for manual/ML-assisted outlier review."""
     _log(logger, "starting build_outlier_dataset")
     if "version" not in submissions.columns:
@@ -250,7 +252,10 @@ def build_outlier_dataset(
         f"with max_records={max_records}: {version_groups}",
     )
 
-    results: list[pd.DataFrame] = []
+    target_dir = Path(target_path)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    saved_files: list[Path] = []
+
     for group_idx, version_group in enumerate(version_groups, start=1):
         _log(logger, f"starting outlier dataset version_group={version_group}")
         sub_v = submissions.loc[submissions["version"].isin(version_group)].copy()
@@ -283,18 +288,17 @@ def build_outlier_dataset(
             logger,
             f"version_group={version_group}: after initial classification shape={out_v.shape}",
         )
-        results.append(out_v)
+        chunk_file = target_dir / f"outlier_dataset_chunk_{group_idx:04d}.parquet"
+        out_v.to_parquet(chunk_file, index=False)
+        saved_files.append(chunk_file)
+        _log(logger, f"saved outlier dataset chunk to {chunk_file}")
         _log(logger, f"finished outlier dataset version_group={version_group} shape={out_v.shape}")
 
         del sub_v, arcs_v, adsh, facts_v, out_v
         gc.collect()
 
-    if results:
-        combined = pd.concat(results, ignore_index=True)
-    else:
-        combined = _empty_outlier_dataset_frame()
-    _log(logger, f"finished build_outlier_dataset combined shape={combined.shape}")
-    return combined
+    _log(logger, f"finished build_outlier_dataset saved {len(saved_files)} files to {target_dir}")
+    return saved_files
 
 
 def _group_versions_by_record_count(
