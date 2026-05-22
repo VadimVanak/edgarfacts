@@ -251,8 +251,10 @@ class PivotizeTests(unittest.TestCase):
 
         self.assertIn("Revenue_q", out.columns)
         self.assertIn("Revenue_q_py", out.columns)
-        self.assertIn("Revenue_a", out.columns)
-        self.assertIn("Revenue_a_py", out.columns)
+        # No annual figures are derivable here (all submissions are 10-Q),
+        # and the optimized pivot only materializes figure columns with data.
+        self.assertNotIn("Revenue_a", out.columns)
+        self.assertNotIn("Revenue_a_py", out.columns)
         self.assertNotIn("start_rep", out.columns)
         self.assertNotIn("end_rep", out.columns)
 
