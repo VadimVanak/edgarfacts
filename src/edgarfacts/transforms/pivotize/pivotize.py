@@ -847,6 +847,7 @@ def transform_and_pivot_figures(
         raise ValueError(f"transformed figures missing columns: {sorted(missing)}")
 
     _log("Step 3: pivot transformed figures to wide format")
+    value_cols = ["quarterly_figure", "quarterly_figure_py", "annual_figure", "annual_figure_py"] 
     suffix = {
         "quarterly_figure": "_q",
         "quarterly_figure_py": "_q_py",
