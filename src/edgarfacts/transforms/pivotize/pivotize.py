@@ -847,7 +847,8 @@ def transform_and_pivot_figures(
         raise ValueError(f"transformed figures missing columns: {sorted(missing)}")
 
     _log("Step 3: pivot transformed figures to wide format")
-    value_cols = ["quarterly_figure", "quarterly_figure_py", "annual_figure", "annual_figure_py"] 
+    
+    value_cols = ["quarterly_figure", "quarterly_figure_py", "annual_figure", "annual_figure_py"]
     suffix = {
         "quarterly_figure": "_q",
         "quarterly_figure_py": "_q_py",
@@ -857,8 +858,6 @@ def transform_and_pivot_figures(
     
     wide_parts = []
     
-    base = df[["adsh", "tag"]].copy()
-    
     for val in value_cols:
         part = df[["adsh", "tag", val]].dropna(subset=[val])
         part = part.pivot(index="adsh", columns="tag", values=val)
@@ -866,18 +865,10 @@ def transform_and_pivot_figures(
         wide_parts.append(part)
     
     wide = pd.concat(wide_parts, axis=1)
-    # Free memory
+    
     del df
     gc.collect()
 
-    # ---- 4) flatten columns: "{tag}{suffix}" ----
-    suffix = {
-        "quarterly_figure": "_q",
-        "quarterly_figure_py": "_q_py",
-        "annual_figure": "_a",
-        "annual_figure_py": "_a_py",
-    }
-    wide.columns = [f"{tag}{suffix[val]}" for (val, tag) in wide.columns]
     _log("Step 4: flatten pivoted figure column names")
   
     # ---- 5) merge ----
