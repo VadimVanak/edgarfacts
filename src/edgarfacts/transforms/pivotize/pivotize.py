@@ -826,9 +826,8 @@ def transform_and_pivot_figures(
         raise ValueError(f"transformed figures missing columns: {sorted(missing)}")
 
     value_cols = ["quarterly_figure", "quarterly_figure_py", "annual_figure", "annual_figure_py"]
-    df.set_index(["adsh", "tag"], inplace=True)
-    df.drop(columns = np.setdiff1d(df.columns, value_cols + ["adsh", "tag"]), inplace=True)
-    wide = df.unstack("tag")
+    df = df[["adsh", "tag", *value_cols]]
+    wide = df.set_index(["adsh", "tag"])[value_cols].unstack("tag")
     # Free memory
     del df
     gc.collect()
@@ -843,10 +842,6 @@ def transform_and_pivot_figures(
     wide.columns = [f"{tag}{suffix[val]}" for (val, tag) in wide.columns]
   
     # ---- 5) merge ----
-    sub_aligned = (
-        sub[sub['adsh'].isin(wide.index)]
-        .set_index("adsh")
-        .reindex(wide.index)
-    ).copy()
-    wide[sub_aligned.columns]=sub_aligned.to_numpy()
+    sub_aligned = sub.set_index("adsh").reindex(wide.index)
+    wide = wide.join(sub_aligned)
     return wide
