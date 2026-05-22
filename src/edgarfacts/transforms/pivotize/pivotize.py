@@ -874,6 +874,16 @@ def transform_and_pivot_figures(
     # ---- 5) merge ----
     sub_aligned = sub.set_index("adsh").reindex(wide.index)
     _log("Step 5: merge wide figures with transformed submissions")
-    wide = wide.join(sub_aligned)
-    _log("Pipeline complete: returning merged pivoted figures")
+    
+    sub_idx = sub.set_index("adsh", drop=True)
+    
+    # Optional but safer: keep only rows needed by wide
+    sub_idx = sub_idx.reindex(wide.index)
+    
+    for col in sub_idx.columns:
+        wide[col] = sub_idx[col].to_numpy(copy=False)
+    
+    del sub_idx
+    gc.collect()
+    
     return wide
