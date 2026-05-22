@@ -651,6 +651,7 @@ def transform_and_pivot_figures(
     *,
     tol_days: int = 10,
     match_form_family: bool = True,
+    logger=None,
 ) -> pd.DataFrame:
     """
     Pipeline:
@@ -690,20 +691,37 @@ def transform_and_pivot_figures(
           annual_figure_py     -> _a_py
       - Merge pivoted figures with modified submissions on adsh.
     """
+    def _log(message: str) -> None:
+        if logger is None:
+            return
+        log_fn = getattr(logger, "info", None)
+        if callable(log_fn):
+            log_fn(message)
+            return
+        if callable(logger):
+            logger(message)
+
+    _log("Step 0: drop duplicate submissions by adsh")
     submissions = submissions.drop_duplicates(subset="adsh")
     # ---- 1) figures transforms ----
+    _log("Step 1.1: remove infrequent figures")
     df = remove_infrequent_figures(figures)
     # Free memory
     del figures
     gc.collect()
+    _log("Step 1.2: fill missing quarterly figures")
     df = fill_missing_quarterly_figures(df, submissions, keep_existing=True, debug=False)
+    _log("Step 1.3: fill missing prior-year figures from shifted reports")
     df = fill_missing_py_from_shifted_reports(
         df, submissions, tol_days=tol_days, match_form_family=match_form_family, debug=False
     )
+    _log("Step 1.4: compute annual figures for current year")
     df = compute_annual_figures_current_year(df, submissions, tol_days=tol_days, debug=False)
+    _log("Step 1.5: add annual prior-year figures from shifted reports")
     df = add_annual_figure_py_from_shifted_reports(
         df, submissions, tol_days=tol_days, match_form_family=match_form_family, debug=False
     )
+    _log("Step 1.6: harmonize instant quarterly and annual figures")
     df = harmonize_instant_quarterly_and_annual(df)
 
     # ---- 2) submissions: annual + quarterly intervals (with imputation) ----
@@ -717,6 +735,7 @@ def transform_and_pivot_figures(
     if missing:
         raise ValueError(f"submissions missing columns: {sorted(missing)}")
 
+    _log("Step 2: compute annual and quarterly intervals for submissions")
     sub = submissions.copy()
     sub["form"] = sub["form"].astype("string")
 
@@ -813,6 +832,7 @@ def transform_and_pivot_figures(
     sub["end_q_py"] = eq_py
 
     # drop annual window anchors as requested
+    _log("Step 2 complete: drop annual window anchor columns")
     sub = sub.drop(columns=["start_rep", "end_rep", "start_rep_py", "end_rep_py"])
 
     # ---- 3) pivot figures ----
@@ -825,6 +845,7 @@ def transform_and_pivot_figures(
     if missing:
         raise ValueError(f"transformed figures missing columns: {sorted(missing)}")
 
+    _log("Step 3: pivot transformed figures to wide format")
     value_cols = ["quarterly_figure", "quarterly_figure_py", "annual_figure", "annual_figure_py"]
     df = df[["adsh", "tag", *value_cols]]
     wide = df.set_index(["adsh", "tag"])[value_cols].unstack("tag")
@@ -840,8 +861,11 @@ def transform_and_pivot_figures(
         "annual_figure_py": "_a_py",
     }
     wide.columns = [f"{tag}{suffix[val]}" for (val, tag) in wide.columns]
+    _log("Step 4: flatten pivoted figure column names")
   
     # ---- 5) merge ----
     sub_aligned = sub.set_index("adsh").reindex(wide.index)
+    _log("Step 5: merge wide figures with transformed submissions")
     wide = wide.join(sub_aligned)
+    _log("Pipeline complete: returning merged pivoted figures")
     return wide
