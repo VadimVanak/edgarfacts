@@ -859,6 +859,7 @@ def transform_and_pivot_figures(
     wide_parts = []
     
     for val in value_cols:
+        _log(f"Processing column {val}")
         part = df[["adsh", "tag", val]].dropna(subset=[val])
         part = part.pivot(index="adsh", columns="tag", values=val)
         part.columns = [f"{tag}{suffix[val]}" for tag in part.columns]
