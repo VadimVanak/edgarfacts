@@ -126,8 +126,10 @@ class OutlierTests(unittest.TestCase):
             "submission_q25_log10",
             "submission_q75_log10",
             "submission_majority_scale",
-            "tag_global_median_log10",
-            "tag_global_mad_log10",
+            "prev_value",
+            "next_value",
+            "tag_occurrence_count",
+            "tag_company_count",
             "parent1_value",
             "parent1_weight",
             "parent1_frequency",
@@ -136,6 +138,8 @@ class OutlierTests(unittest.TestCase):
             "parent2_frequency",
         }
         self.assertTrue(removed_columns.isdisjoint(out.columns))
+        self.assertIn("tag_global_median_log10", out.columns)
+        self.assertIn("tag_global_mad_log10", out.columns)
         self.assertIn("outlier_multiplier", out.columns)
         dup = out[(out["adsh"].eq(1)) & (out["tag"].astype(str).eq("Revenue"))]
         self.assertTrue(dup["duplicate_majority_value"].isna().all())
@@ -166,8 +170,20 @@ class OutlierTests(unittest.TestCase):
             first_group = pd.read_parquet(paths[0])
             second_group = pd.read_parquet(paths[1])
 
-        self.assertTrue((first_group["tag_occurrence_count"] == 2).all())
-        self.assertTrue((second_group["tag_occurrence_count"] == 1).all())
+        self.assertNotIn("tag_occurrence_count", first_group.columns)
+        self.assertNotIn("tag_company_count", first_group.columns)
+        self.assertNotIn("prev_value", first_group.columns)
+        self.assertNotIn("next_value", first_group.columns)
+        self.assertAlmostEqual(
+            float(first_group["tag_global_median_log10"].iloc[0]), 2.0206964, places=6
+        )
+        self.assertAlmostEqual(
+            float(first_group["tag_global_mad_log10"].iloc[0]), 0.0206964, places=6
+        )
+        self.assertAlmostEqual(
+            float(second_group["tag_global_median_log10"].iloc[0]), 2.0791812, places=6
+        )
+        self.assertAlmostEqual(float(second_group["tag_global_mad_log10"].iloc[0]), 0.0, places=6)
 
     def test_build_outlier_dataset_keeps_oversized_version_as_own_group(self):
         facts = pd.DataFrame(
@@ -197,8 +213,16 @@ class OutlierTests(unittest.TestCase):
 
         first_revenue = first_group[first_group["tag"].astype(str).eq("Revenue")]
         second_revenue = second_group[second_group["tag"].astype(str).eq("Revenue")]
-        self.assertTrue((first_revenue["tag_occurrence_count"] == 1).all())
-        self.assertTrue((second_revenue["tag_occurrence_count"] == 1).all())
+        self.assertNotIn("tag_occurrence_count", first_group.columns)
+        self.assertNotIn("tag_company_count", first_group.columns)
+        self.assertAlmostEqual(
+            float(first_revenue["tag_global_median_log10"].iloc[0]), 2.0, places=6
+        )
+        self.assertAlmostEqual(float(first_revenue["tag_global_mad_log10"].iloc[0]), 0.0, places=6)
+        self.assertAlmostEqual(
+            float(second_revenue["tag_global_median_log10"].iloc[0]), 2.0413928, places=6
+        )
+        self.assertAlmostEqual(float(second_revenue["tag_global_mad_log10"].iloc[0]), 0.0, places=6)
 
     def test_build_outlier_dataset_empty_arcs_omits_parent_columns(self):
         facts = pd.DataFrame(
