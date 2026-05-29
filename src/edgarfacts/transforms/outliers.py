@@ -210,10 +210,8 @@ def _classify_outlier_multiplier_one_bundle(
     classified["_priority"] = pair_mult.loc[mask].map(_OUTLIER_MULTIPLIER_PRIORITY)
     classified["outlier_multiplier"] = pair_mult.loc[mask].to_numpy(dtype="float64")
 
-    best = (
-        classified
-        .sort_values(["_orig_index", "_priority"], kind="mergesort")
-        .drop_duplicates("_orig_index")
+    best = classified.sort_values(["_orig_index", "_priority"], kind="mergesort").drop_duplicates(
+        "_orig_index"
     )
 
     result.loc[best["_orig_index"].to_numpy()] = best["outlier_multiplier"].to_numpy(
@@ -461,8 +459,8 @@ def _build_outlier_dataset_one_chunk(
     _add_tag_stats(base)
     _log(logger, f"version={_version_label(submissions)}: after tag stats")
 
-    _add_prev_next_rolling_stats(base, rolling_window)
-    _log(logger, f"version={_version_label(submissions)}: after previous/next/rolling stats")
+    _add_rolling_stats(base, rolling_window)
+    _log(logger, f"version={_version_label(submissions)}: after rolling stats")
 
     _add_duplicate_features(base)
     _log(logger, f"version={_version_label(submissions)}: after duplicate features")
@@ -475,15 +473,17 @@ def _build_outlier_dataset_one_chunk(
 
 def _add_tag_stats(df: pd.DataFrame) -> None:
     grp = df.groupby("tag", observed=True)
-    df["tag_occurrence_count"] = grp["value"].transform("size").astype("int32")
-    df["tag_company_count"] = grp["cik"].transform("nunique").astype("int32")
+    df["tag_global_median_log10"] = grp["abs_value_log10"].transform("median").astype("float32")
+
+    tag_global_mad = pd.Series(np.nan, index=df.index, dtype="float32")
+    for _, group in grp:
+        tag_global_mad.loc[group.index] = _mad(group["abs_value_log10"])
+    df["tag_global_mad_log10"] = tag_global_mad
 
 
-def _add_prev_next_rolling_stats(df: pd.DataFrame, rolling_window: int) -> None:
+def _add_rolling_stats(df: pd.DataFrame, rolling_window: int) -> None:
     df.sort_values(["cik", "tag", "end", "start", "adsh"], inplace=True, kind="mergesort")
     grp = df.groupby(["cik", "tag"], observed=True, sort=False)
-    df["prev_value"] = grp["value"].shift(1).astype("float64")
-    df["next_value"] = grp["value"].shift(-1).astype("float64")
     df["n_prior_observations"] = grp.cumcount().astype("int32")
     sizes = grp["value"].transform("size").astype("int32")
     df["n_future_observations"] = (sizes - df["n_prior_observations"] - 1).astype("int32")
@@ -510,9 +510,9 @@ def _add_prev_next_rolling_stats(df: pd.DataFrame, rolling_window: int) -> None:
 def _add_duplicate_features(df: pd.DataFrame) -> None:
     keys = ["cik", "tag", "start", "end"]
     unique_value_count = df.groupby(keys, observed=True)["value"].transform("nunique")
-    df["duplicate_majority_value"] = np.where(
-        unique_value_count.eq(1), df["value"], np.nan
-    ).astype("float64")
+    df["duplicate_majority_value"] = np.where(unique_value_count.eq(1), df["value"], np.nan).astype(
+        "float64"
+    )
 
 
 def _add_best_overlap_value(df: pd.DataFrame, *, overlap_window: int) -> None:
@@ -559,12 +559,7 @@ def _add_best_overlap_value(df: pd.DataFrame, *, overlap_window: int) -> None:
         overlap_start = np.maximum(starts[left_idx], starts[right_idx])
         overlap_end = np.minimum(ends[left_idx], ends[right_idx])
 
-        overlap_days = (
-            (overlap_end - overlap_start)
-            .astype("timedelta64[D]")
-            .astype("int32")
-            + 1
-        )
+        overlap_days = (overlap_end - overlap_start).astype("timedelta64[D]").astype("int32") + 1
         overlap_days = np.maximum(overlap_days, 0)
 
         denom = np.minimum(
@@ -605,7 +600,7 @@ def _add_best_overlap_value(df: pd.DataFrame, *, overlap_window: int) -> None:
 
     del ordered, result, best_value, best_frac, starts, ends, values, cik, tag_codes, dur
     gc.collect()
-    
+
 
 def _compact_outlier_dataset(df: pd.DataFrame) -> pd.DataFrame:
     if "tag" in df.columns:
@@ -616,13 +611,13 @@ def _compact_outlier_dataset(df: pd.DataFrame) -> pd.DataFrame:
         "rolling_mad_log10",
         "rolling_q25_log10",
         "rolling_q75_log10",
+        "tag_global_median_log10",
+        "tag_global_mad_log10",
     ]:
         if col in df.columns:
             df[col] = df[col].astype("float32")
     for col in [
         "duration_days",
-        "tag_occurrence_count",
-        "tag_company_count",
         "n_prior_observations",
         "n_future_observations",
     ]:
@@ -676,8 +671,6 @@ _OUTLIER_DATASET_COLUMNS = [
     "value",
     "value_adj",
     "abs_value_log10",
-    "prev_value",
-    "next_value",
     "best_overlap_value",
     "duplicate_majority_value",
     "rolling_median_log10",
@@ -686,8 +679,8 @@ _OUTLIER_DATASET_COLUMNS = [
     "rolling_q75_log10",
     "n_prior_observations",
     "n_future_observations",
-    "tag_occurrence_count",
-    "tag_company_count",
+    "tag_global_median_log10",
+    "tag_global_mad_log10",
 ]
 
 
