@@ -108,13 +108,36 @@ class OutlierTests(unittest.TestCase):
             paths = build_outlier_dataset(facts, submissions, arcs, _Logger(), target_path=td)
             out = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
-        self.assertSetEqual(set(out["version"].astype(str).unique()), {"v1", "v2"})
+        removed_columns = {
+            "cik",
+            "is_instant",
+            "accepted_year",
+            "version",
+            "sic",
+            "form",
+            "is_amended",
+            "sign",
+            "best_overlap_fraction",
+            "duplicate_value_count",
+            "duplicate_unique_value_count",
+            "submission_size",
+            "submission_median_log10",
+            "submission_mad_log10",
+            "submission_q25_log10",
+            "submission_q75_log10",
+            "submission_majority_scale",
+            "tag_global_median_log10",
+            "tag_global_mad_log10",
+            "parent1_value",
+            "parent1_weight",
+            "parent1_frequency",
+            "parent2_value",
+            "parent2_weight",
+            "parent2_frequency",
+        }
+        self.assertTrue(removed_columns.isdisjoint(out.columns))
         self.assertIn("outlier_multiplier", out.columns)
-        for col in ["parent1_value", "parent1_weight", "parent1_frequency", "parent2_value"]:
-            self.assertIn(col, out.columns)
         dup = out[(out["adsh"].eq(1)) & (out["tag"].astype(str).eq("Revenue"))]
-        self.assertTrue((dup["duplicate_value_count"] == 2).all())
-        self.assertTrue((dup["duplicate_unique_value_count"] == 2).all())
         self.assertTrue(dup["duplicate_majority_value"].isna().all())
 
     def test_build_outlier_dataset_groups_versions_up_to_max_records(self):
@@ -140,10 +163,9 @@ class OutlierTests(unittest.TestCase):
             paths = build_outlier_dataset(
                 facts, submissions, arcs, _Logger(), max_records=2, target_path=td
             )
-            out = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+            first_group = pd.read_parquet(paths[0])
+            second_group = pd.read_parquet(paths[1])
 
-        first_group = out[out["version"].astype(str).isin(["v1", "v2"])]
-        second_group = out[out["version"].astype(str).eq("v3")]
         self.assertTrue((first_group["tag_occurrence_count"] == 2).all())
         self.assertTrue((second_group["tag_occurrence_count"] == 1).all())
 
@@ -170,18 +192,15 @@ class OutlierTests(unittest.TestCase):
             paths = build_outlier_dataset(
                 facts, submissions, arcs, _Logger(), max_records=1, target_path=td
             )
-            out = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+            first_group = pd.read_parquet(paths[0])
+            second_group = pd.read_parquet(paths[1])
 
-        v1_revenue = out[
-            (out["version"].astype(str).eq("v1")) & (out["tag"].astype(str).eq("Revenue"))
-        ]
-        v2_revenue = out[
-            (out["version"].astype(str).eq("v2")) & (out["tag"].astype(str).eq("Revenue"))
-        ]
-        self.assertTrue((v1_revenue["tag_occurrence_count"] == 1).all())
-        self.assertTrue((v2_revenue["tag_occurrence_count"] == 1).all())
+        first_revenue = first_group[first_group["tag"].astype(str).eq("Revenue")]
+        second_revenue = second_group[second_group["tag"].astype(str).eq("Revenue")]
+        self.assertTrue((first_revenue["tag_occurrence_count"] == 1).all())
+        self.assertTrue((second_revenue["tag_occurrence_count"] == 1).all())
 
-    def test_build_outlier_dataset_empty_arcs_keeps_parent_columns(self):
+    def test_build_outlier_dataset_empty_arcs_omits_parent_columns(self):
         facts = pd.DataFrame(
             {
                 "adsh": [1],
@@ -198,10 +217,8 @@ class OutlierTests(unittest.TestCase):
             paths = build_outlier_dataset(facts, submissions, arcs, _Logger(), target_path=td)
             out = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
-        self.assertIn("parent1_value", out.columns)
-        self.assertIn("parent2_value", out.columns)
-        self.assertTrue(out["parent1_value"].isna().all())
-        self.assertTrue(out["parent2_value"].isna().all())
+        self.assertNotIn("parent1_value", out.columns)
+        self.assertNotIn("parent2_value", out.columns)
 
     def test_build_outlier_dataset_saves_chunk_files(self):
         facts = pd.DataFrame(

@@ -259,23 +259,17 @@ def build_outlier_dataset(
     for group_idx, version_group in enumerate(version_groups, start=1):
         _log(logger, f"starting outlier dataset version_group={version_group}")
         sub_v = submissions.loc[submissions["version"].isin(version_group)].copy()
-        arcs_v = (
-            arcs.loc[arcs["version"].isin(version_group)].copy()
-            if "version" in arcs.columns
-            else arcs.iloc[0:0].copy()
-        )
         adsh = sub_v["adsh"].drop_duplicates()
         facts_v = facts.loc[facts["adsh"].isin(adsh)].copy()
         _log(
             logger,
             f"version_group={group_idx}/{len(version_groups)} {version_group}: "
-            f"submissions={len(sub_v)} arcs={len(arcs_v)} facts={len(facts_v)}",
+            f"submissions={len(sub_v)} facts={len(facts_v)}",
         )
 
         out_v = _build_outlier_dataset_one_chunk(
             facts_v,
             sub_v,
-            arcs_v,
             logger,
             overlap_window=overlap_window,
             rolling_window=rolling_window,
@@ -288,13 +282,14 @@ def build_outlier_dataset(
             logger,
             f"version_group={version_group}: after initial classification shape={out_v.shape}",
         )
+        out_v = _compact_outlier_dataset(out_v)
         chunk_file = target_dir / f"outlier_dataset_chunk_{group_idx:04d}.parquet"
         out_v.to_parquet(chunk_file, index=False)
         saved_files.append(chunk_file)
         _log(logger, f"saved outlier dataset chunk to {chunk_file}")
         _log(logger, f"finished outlier dataset version_group={version_group} shape={out_v.shape}")
 
-        del sub_v, arcs_v, adsh, facts_v, out_v
+        del sub_v, adsh, facts_v, out_v
         gc.collect()
 
     _log(logger, f"finished build_outlier_dataset saved {len(saved_files)} files to {target_dir}")
@@ -444,7 +439,6 @@ def _classify_pairwise_scale_matches(df2: pd.DataFrame) -> pd.Series:
 def _build_outlier_dataset_one_chunk(
     facts: pd.DataFrame,
     submissions: pd.DataFrame,
-    arcs: pd.DataFrame,
     logger,
     *,
     overlap_window: int,
@@ -457,21 +451,15 @@ def _build_outlier_dataset_one_chunk(
     base["end"] = pd.to_datetime(base["end"]).astype(config.DATETIME_DTYPE)
     base["value"] = pd.to_numeric(base["value"], errors="coerce").astype("float64")
     base = compute_value_adj(base)
-    base = base.merge(_submission_metadata(submissions), how="left", on=["adsh", "cik"])
     base["duration_days"] = (base["end"] - base["start"]).dt.days.astype("int32")
-    base["is_instant"] = base["start"] == base["end"]
     base["abs_value_log10"] = _safe_log10(base["value_adj"], min_abs_for_log).astype("float32")
-    base["sign"] = np.sign(base["value"].fillna(0)).astype("int8")
     _log(
         logger,
         f"version={_version_label(submissions)}: after base frame creation shape={base.shape}",
     )
 
-    _add_tag_stats(base, min_abs_for_log)
+    _add_tag_stats(base)
     _log(logger, f"version={_version_label(submissions)}: after tag stats")
-
-    _add_submission_stats(base)
-    _log(logger, f"version={_version_label(submissions)}: after submission stats")
 
     _add_prev_next_rolling_stats(base, rolling_window)
     _log(logger, f"version={_version_label(submissions)}: after previous/next/rolling stats")
@@ -482,174 +470,14 @@ def _build_outlier_dataset_one_chunk(
     _add_best_overlap_value(base, overlap_window=overlap_window)
     _log(logger, f"version={_version_label(submissions)}: after best-overlap features")
 
-    parent_map = _build_top_parent_map(arcs)
-    base = _add_parent_values(base, parent_map)
-    _log(logger, f"version={_version_label(submissions)}: after parent features")
-
-    return _compact_outlier_dataset(base)
+    return base
 
 
-def _submission_metadata(submissions: pd.DataFrame) -> pd.DataFrame:
-    meta = submissions[
-        [
-            c
-            for c in [
-                "adsh",
-                "cik",
-                "version",
-                "sic",
-                "form",
-                "accepted",
-                "is_amended",
-                "amendment_adsh",
-            ]
-            if c in submissions.columns
-        ]
-    ].copy()
-    if "accepted" in meta.columns:
-        meta["accepted_year"] = pd.to_datetime(meta["accepted"], errors="coerce").dt.year.astype(
-            "float32"
-        )
-        meta = meta.drop(columns="accepted")
-    else:
-        meta["accepted_year"] = np.nan
-    if "is_amended" not in meta.columns:
-        if "form" in meta.columns:
-            meta["is_amended"] = meta["form"].astype("string").str.endswith("/A", na=False)
-        elif "amendment_adsh" in meta.columns:
-            meta["is_amended"] = (
-                pd.to_numeric(meta["amendment_adsh"], errors="coerce").fillna(0).ne(0)
-            )
-        else:
-            meta["is_amended"] = False
-    meta = meta.drop(columns=["amendment_adsh"], errors="ignore")
-    for col in ["version", "sic", "form"]:
-        if col not in meta.columns:
-            meta[col] = pd.NA
-    return meta.drop_duplicates(["adsh", "cik"])
-
-
-def _add_tag_stats(df: pd.DataFrame, min_abs_for_log: float) -> None:
+def _add_tag_stats(df: pd.DataFrame) -> None:
     grp = df.groupby("tag", observed=True)
     df["tag_occurrence_count"] = grp["value"].transform("size").astype("int32")
     df["tag_company_count"] = grp["cik"].transform("nunique").astype("int32")
-    df["tag_global_median_log10"] = grp["abs_value_log10"].transform("median").astype("float32")
-    df["tag_global_mad_log10"] = grp["abs_value_log10"].transform(_mad).astype("float32")
 
-
-def _add_submission_stats(df: pd.DataFrame) -> None:
-    """
-    Faster submission-level statistics.
-
-    Uses:
-    - exact median via groupby median
-    - approximate MAD from rounded log10 scale
-    - approximate q25/q75 from median ± 0.6745 * approx_MAD
-
-    Mutates df in place.
-    """
-    keys = df["adsh"]
-    x = pd.to_numeric(df["abs_value_log10"], errors="coerce").astype("float32")
-
-    stats = (
-        pd.DataFrame({"adsh": keys, "x": x, "value": df["value"]})
-        .groupby("adsh", observed=True, sort=False)
-        .agg(
-            submission_size=("value", "size"),
-            submission_median_log10=("x", "median"),
-        )
-        .reset_index()
-    )
-
-    # Approximate MAD using rounded scale distance from submission median.
-    tmp = df[["adsh", "abs_value_log10"]].copy()
-    tmp = tmp.merge(
-        stats[["adsh", "submission_median_log10"]],
-        on="adsh",
-        how="left",
-        copy=False,
-    )
-
-    tmp["_abs_dev_rounded"] = (
-        tmp["abs_value_log10"] - tmp["submission_median_log10"]
-    ).abs().round(2).astype("float32")
-
-    mad = (
-        tmp.groupby("adsh", observed=True, sort=False)["_abs_dev_rounded"]
-        .median()
-        .rename("submission_mad_log10")
-        .reset_index()
-    )
-
-    stats = stats.merge(mad, on="adsh", how="left", copy=False)
-
-    # Majority scale: compute using rounded integer scale.
-    scale = df[["adsh", "abs_value_log10"]].copy()
-    scale["_scale"] = scale["abs_value_log10"].round().astype("float32")
-    scale = scale.dropna(subset=["_scale"])
-
-    if scale.empty:
-        stats["submission_majority_scale"] = np.nan
-    else:
-        scale_counts = (
-            scale.groupby(["adsh", "_scale"], observed=True, sort=False)
-            .size()
-            .rename("_n")
-            .reset_index()
-        )
-
-        majority_scale = (
-            scale_counts.sort_values(
-                ["adsh", "_n", "_scale"],
-                ascending=[True, False, True],
-                kind="mergesort",
-            )
-            .drop_duplicates("adsh")
-            [["adsh", "_scale"]]
-            .rename(columns={"_scale": "submission_majority_scale"})
-        )
-
-        stats = stats.merge(majority_scale, on="adsh", how="left", copy=False)
-
-    stats["submission_mad_log10"] = stats["submission_mad_log10"].fillna(0.0)
-
-    stats["submission_q25_log10"] = (
-        stats["submission_median_log10"] - 0.6745 * stats["submission_mad_log10"]
-    )
-    stats["submission_q75_log10"] = (
-        stats["submission_median_log10"] + 0.6745 * stats["submission_mad_log10"]
-    )
-
-    stats["submission_size"] = stats["submission_size"].astype("int32")
-
-    for col in [
-        "submission_median_log10",
-        "submission_mad_log10",
-        "submission_q25_log10",
-        "submission_q75_log10",
-        "submission_majority_scale",
-    ]:
-        stats[col] = pd.to_numeric(stats[col], errors="coerce").astype("float32")
-
-    merged = df[["adsh"]].merge(stats, on="adsh", how="left", copy=False)
-
-    for col in [
-        "submission_size",
-        "submission_median_log10",
-        "submission_mad_log10",
-        "submission_q25_log10",
-        "submission_q75_log10",
-        "submission_majority_scale",
-    ]:
-        df[col] = merged[col].to_numpy()
-
-    del stats, tmp, mad, scale, merged
-    if "scale_counts" in locals():
-        del scale_counts
-    if "majority_scale" in locals():
-        del majority_scale
-    gc.collect()
-    
 
 def _add_prev_next_rolling_stats(df: pd.DataFrame, rolling_window: int) -> None:
     df.sort_values(["cik", "tag", "end", "start", "adsh"], inplace=True, kind="mergesort")
@@ -681,11 +509,9 @@ def _add_prev_next_rolling_stats(df: pd.DataFrame, rolling_window: int) -> None:
 
 def _add_duplicate_features(df: pd.DataFrame) -> None:
     keys = ["cik", "tag", "start", "end"]
-    grp = df.groupby(keys, observed=True)["value"]
-    df["duplicate_value_count"] = grp.transform("size").astype("int32")
-    df["duplicate_unique_value_count"] = grp.transform("nunique").astype("int32")
+    unique_value_count = df.groupby(keys, observed=True)["value"].transform("nunique")
     df["duplicate_majority_value"] = np.where(
-        df["duplicate_unique_value_count"].eq(1), df["value"], np.nan
+        unique_value_count.eq(1), df["value"], np.nan
     ).astype("float64")
 
 
@@ -702,7 +528,6 @@ def _add_best_overlap_value(df: pd.DataFrame, *, overlap_window: int) -> None:
     """
     if df.empty:
         df["best_overlap_value"] = np.nan
-        df["best_overlap_fraction"] = np.float32(0.0)
         return
 
     ordered = df.sort_values(["cik", "tag", "start", "end", "adsh"], kind="mergesort")
@@ -773,119 +598,40 @@ def _add_best_overlap_value(df: pd.DataFrame, *, overlap_window: int) -> None:
         {
             "_orig_index": ordered.index.to_numpy(),
             "best_overlap_value": best_value,
-            "best_overlap_fraction": best_frac,
         }
     ).set_index("_orig_index")
 
     df["best_overlap_value"] = result.loc[df.index, "best_overlap_value"].to_numpy(dtype="float64")
-    df["best_overlap_fraction"] = result.loc[df.index, "best_overlap_fraction"].to_numpy(dtype="float32")
 
     del ordered, result, best_value, best_frac, starts, ends, values, cik, tag_codes, dur
     gc.collect()
     
 
-def _build_top_parent_map(arcs: pd.DataFrame) -> pd.DataFrame:
-    """Return top two most frequent parent tags for each (version, child tag)."""
-    columns = [
-        "version",
-        "tag",
-        "parent_rank",
-        "parent_tag",
-        "parent_weight",
-        "parent_frequency",
-    ]
-    required = {"version", "from", "to", "weight"}
-    if arcs.empty or not required.issubset(arcs.columns):
-        return pd.DataFrame(columns=columns)
-
-    counts = (
-        arcs.groupby(["version", "to", "from"], observed=True)
-        .agg(parent_frequency=("from", "size"), parent_weight=("weight", "median"))
-        .reset_index()
-        .rename(columns={"to": "tag", "from": "parent_tag"})
-    )
-    counts = counts.sort_values(
-        ["version", "tag", "parent_frequency", "parent_tag"],
-        ascending=[True, True, False, True],
-        kind="mergesort",
-    )
-    counts["parent_rank"] = counts.groupby(["version", "tag"], observed=True).cumcount() + 1
-    counts = counts.loc[counts["parent_rank"].le(2), columns]
-    counts["parent_frequency"] = counts["parent_frequency"].astype("int32")
-    counts["parent_weight"] = pd.to_numeric(counts["parent_weight"], errors="coerce").astype(
-        "float32"
-    )
-    return counts
-
-
-def _add_parent_values(df: pd.DataFrame, parent_map: pd.DataFrame) -> pd.DataFrame:
-    """Add top parent values by looking up parent tags inside the same submission."""
-    out = df.copy()
-    for rank in (1, 2):
-        out[f"parent{rank}_value"] = np.nan
-        out[f"parent{rank}_weight"] = np.nan
-        out[f"parent{rank}_frequency"] = np.int32(0)
-
-    if parent_map.empty or df.empty:
-        return out
-
-    values = (
-        df.groupby(["adsh", "tag"], observed=True, as_index=False)["value"]
-        .median()
-        .rename(columns={"tag": "parent_tag", "value": "_parent_value"})
-    )
-    for rank in (1, 2):
-        pm = parent_map.loc[parent_map["parent_rank"].eq(rank)].drop(columns="parent_rank")
-        if pm.empty:
-            continue
-        tmp = out[["adsh", "version", "tag"]].merge(pm, how="left", on=["version", "tag"])
-        tmp = tmp.merge(values, how="left", on=["adsh", "parent_tag"])
-        out[f"parent{rank}_value"] = tmp["_parent_value"].to_numpy(dtype="float64")
-        out[f"parent{rank}_weight"] = tmp["parent_weight"].to_numpy(dtype="float32")
-        out[f"parent{rank}_frequency"] = (
-            tmp["parent_frequency"].fillna(0).astype("int32").to_numpy()
-        )
-    return out
-
-
 def _compact_outlier_dataset(df: pd.DataFrame) -> pd.DataFrame:
-    for col in ["version", "sic", "form", "tag"]:
-        if col in df.columns:
-            df[col] = df[col].astype("category")
+    if "tag" in df.columns:
+        df["tag"] = df["tag"].astype("category")
     for col in [
         "abs_value_log10",
         "rolling_median_log10",
         "rolling_mad_log10",
         "rolling_q25_log10",
         "rolling_q75_log10",
-        "submission_median_log10",
-        "submission_mad_log10",
-        "submission_q25_log10",
-        "submission_q75_log10",
-        "submission_majority_scale",
-        "tag_global_median_log10",
-        "tag_global_mad_log10",
-        "best_overlap_fraction",
-        "parent1_weight",
-        "parent2_weight",
     ]:
         if col in df.columns:
             df[col] = df[col].astype("float32")
     for col in [
         "duration_days",
-        "duplicate_value_count",
-        "duplicate_unique_value_count",
-        "submission_size",
         "tag_occurrence_count",
         "tag_company_count",
         "n_prior_observations",
         "n_future_observations",
-        "parent1_frequency",
-        "parent2_frequency",
     ]:
         if col in df.columns:
             df[col] = df[col].astype("int32")
-    return df[_OUTLIER_DATASET_COLUMNS]
+    columns = [*_OUTLIER_DATASET_COLUMNS]
+    if "outlier_multiplier" in df.columns:
+        columns.append("outlier_multiplier")
+    return df[columns]
 
 
 def _empty_outlier_dataset_frame() -> pd.DataFrame:
@@ -923,27 +669,16 @@ def _log(logger, message: str) -> None:
 
 _OUTLIER_DATASET_COLUMNS = [
     "adsh",
-    "cik",
     "tag",
     "start",
     "end",
     "duration_days",
-    "is_instant",
-    "accepted_year",
-    "version",
-    "sic",
-    "form",
-    "is_amended",
     "value",
     "value_adj",
     "abs_value_log10",
-    "sign",
     "prev_value",
     "next_value",
     "best_overlap_value",
-    "best_overlap_fraction",
-    "duplicate_value_count",
-    "duplicate_unique_value_count",
     "duplicate_majority_value",
     "rolling_median_log10",
     "rolling_mad_log10",
@@ -951,22 +686,8 @@ _OUTLIER_DATASET_COLUMNS = [
     "rolling_q75_log10",
     "n_prior_observations",
     "n_future_observations",
-    "submission_size",
-    "submission_median_log10",
-    "submission_mad_log10",
-    "submission_q25_log10",
-    "submission_q75_log10",
-    "submission_majority_scale",
     "tag_occurrence_count",
     "tag_company_count",
-    "tag_global_median_log10",
-    "tag_global_mad_log10",
-    "parent1_value",
-    "parent1_weight",
-    "parent1_frequency",
-    "parent2_value",
-    "parent2_weight",
-    "parent2_frequency",
 ]
 
 
